@@ -21,9 +21,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: raven-actions/actionlint@v2
+      # The author's own image (rhysd/actionlint usage docs), pinned like the
+      # version .github/actionlint.yaml is written for; it bundles shellcheck
+      # for run: blocks.
+      - uses: docker://rhysd/actionlint:1.7.12
         with:
-          version: 1.7.12
+          args: -color
 
       - run: shellcheck scripts/*.sh
 

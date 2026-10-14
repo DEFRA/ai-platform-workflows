@@ -41,7 +41,7 @@ const FAKE_CHECKS = `const { appendFileSync, writeFileSync } = require('node:fs'
 const args = process.argv.slice(2)
 appendFileSync(process.env.AIP_TEST_LOG, 'checks ' + args.join(' ') + '\\n')
 const out = args[args.indexOf('--out') + 1]
-if (args[0] === 'teams-variables') writeFileSync(out, '{}')
+if (args[0] === 'teams-variables' || args[0] === 'params') writeFileSync(out, '{}')
 if (args[0] === 'run-report') {
   writeFileSync(out, JSON.stringify({
     outcome: args[args.indexOf('--outcome') + 1],

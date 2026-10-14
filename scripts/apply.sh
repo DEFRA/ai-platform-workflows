@@ -23,8 +23,7 @@ environment="${AIP_ENVIRONMENT:?}"
 infra="${AIP_INFRA:?}"
 config="$(realpath "${AIP_CONFIG:-config}")"
 root="$infra/$state"
-global="$config/global.tfvars.json"
-params="$config/environments/$environment/platform.tfvars.json"
+params_file="$RUNNER_TEMP/params.tfvars.json"
 report_file="run-report-$environment.json"
 graph="https://graph.microsoft.com/v1.0"
 entra_objects='select(.type == "azuread_application" or .type == "azuread_service_principal")'
@@ -44,11 +43,17 @@ break_glass() {
   echo "### Break-glass: $1 by ${GITHUB_TRIGGERING_ACTOR:-unknown}" >> "$GITHUB_STEP_SUMMARY"
 }
 
+# The environment's parameters, merged and validated in one place: the one
+# file the names and platform roots read.
+params() {
+  checks params --infra "$infra" --environments "$config" --environment "$environment" \
+    --out "$params_file"
+}
+
 # The state backend's CCoE names, from the provider-free names root.
 backend() {
   local vars="$RUNNER_TEMP/names.tfvars.json"
-  jq -n --arg global "$global" --arg params "$params" \
-    '{config_files: [$global, $params]}' > "$vars"
+  jq -n --arg params "$params_file" '{params_file: $params}' > "$vars"
   terraform -chdir="$infra/names" init -backend=false -input=false > /dev/null
   terraform -chdir="$infra/names" apply -auto-approve -input=false -lock=false \
     -state="$RUNNER_TEMP/names.tfstate" -var-file="$vars" > /dev/null
@@ -74,6 +79,7 @@ plan() {
       --out "$root/teams.auto.tfvars.json"
   fi
 
+  params
   local location
   location="$(backend)"
   terraform -chdir="$root" init -input=false -lockfile=readonly \
@@ -90,7 +96,7 @@ plan() {
 
   local vars=(-var "release=${AIP_RELEASE:?}" -var "entra_enabled=${AIP_ENTRA_ENABLED:?}")
   if [[ "$state" == "platform" ]]; then
-    vars+=(-var-file="$global" -var-file="$params")
+    vars+=(-var-file="$params_file")
   else
     # Every CDP federation takes its issuer, account and audience from here.
     local cdp

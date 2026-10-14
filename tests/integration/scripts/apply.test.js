@@ -124,20 +124,19 @@ describe('apply.sh plan', () => {
         line.includes('/platform plan')
       )
     ).toMatch(
-      /-var release=v0\.4\.0 -var entra_enabled=true -var-file=.*\/config\/global\.tfvars\.json -var-file=.*\/config\/environments\/infradev\/platform\.tfvars\.json$/
+      /-var release=v0\.4\.0 -var entra_enabled=true -var-file=.*\/params\.tfvars\.json$/
     )
+    expect(command('checks params')).toEqual([
+      expect.stringMatching(
+        /^checks params --infra .*\/infra --environments .*\/config --environment infradev --out .*\/params\.tfvars\.json$/
+      )
+    ])
     expect(command('checks plan-guard')).toEqual([
       'checks plan-guard --plan plan.json --state platform'
     ])
     expect(
       JSON.parse(readFileSync(join(workspace.dir, 'names.tfvars.json'), 'utf8'))
-        .config_files
-    ).toEqual([
-      expect.stringMatching(/\/config\/global\.tfvars\.json$/),
-      expect.stringMatching(
-        /\/config\/environments\/infradev\/platform\.tfvars\.json$/
-      )
-    ])
+    ).toEqual({ params_file: expect.stringMatching(/\/params\.tfvars\.json$/) })
   })
 
   test('re-validates and bundles the team files for the tenants state', () => {

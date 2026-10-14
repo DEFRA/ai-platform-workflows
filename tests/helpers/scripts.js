@@ -17,15 +17,22 @@ import { readCommandFile } from './command-file.js'
 const BASH = process.env.AIP_TEST_BASH ?? 'bash'
 const SCRIPTS = resolve(import.meta.dirname, '..', '..', 'scripts')
 
-// Records each call and prints what the scripts read from terraform.
+// Records each call and prints what the scripts read from terraform; the
+// saved plan is AIP_TEST_PLAN when set.
 const FAKE_TERRAFORM = `#!/usr/bin/env bash
 printf 'terraform %s\\n' "$*" >> "$AIP_TEST_LOG"
 case "$*" in
   *"-json backend") echo '{"container_name":"tfstate","resource_group_name":"SNDAIPINFRGP1402","storage_account_name":"sndaipinfsto1401"}' ;;
-  *"show -json tfplan") echo '{"resource_changes":[]}' ;;
+  *"show -json tfplan") if [[ -n "\${AIP_TEST_PLAN:-}" ]]; then cat "$AIP_TEST_PLAN"; else echo '{"resource_changes":[]}'; fi ;;
   *"-json tfplan") echo '{"@message":"Apply complete!"}' ;;
   *"output -json") echo '{}' ;;
 esac
+[[ "$*" != *"\${AIP_TEST_FAIL:-none}"* ]]
+`
+
+// Records each call to the Azure CLI; a call matching AIP_TEST_FAIL fails.
+const FAKE_AZ = `#!/usr/bin/env bash
+printf 'az %s\\n' "$*" >> "$AIP_TEST_LOG"
 [[ "$*" != *"\${AIP_TEST_FAIL:-none}"* ]]
 `
 
@@ -40,7 +47,8 @@ if (args[0] === 'run-report') {
     outcome: args[args.indexOf('--outcome') + 1],
     changes: { total: { create: 2, update: 1, delete: 0, replace: 0 } },
     operations: [{ operationIds: ['op-00000001'] }],
-    failingTeams: []
+    failingTeams: [],
+    entraObjects: 4
   }))
 }
 process.exit(process.env.AIP_TEST_FAIL === args[0] ? 1 : 0)
@@ -83,6 +91,8 @@ function createWorkspace() {
   mkdirSync(bin)
   writeFileSync(join(bin, 'terraform'), FAKE_TERRAFORM)
   chmodSync(join(bin, 'terraform'), 0o755)
+  writeFileSync(join(bin, 'az'), FAKE_AZ)
+  chmodSync(join(bin, 'az'), 0o755)
   writeFileSync(join(dir, 'fake-checks.cjs'), FAKE_CHECKS)
 
   if (process.platform === 'win32') {

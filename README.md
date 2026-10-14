@@ -7,30 +7,39 @@ repositories: `ai-platform-infra`, `ai-platform-environments`, `ai-platform-tena
 
 ## Workflows
 
-| Workflow                     | Called from                     | Trigger in the caller                 | Does                                                                                                   |
-| ---------------------------- | ------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `submit-desired-state.yml`   | tenants, deployments            | `workflow_dispatch` (`submit.yml`)    | Validates at the pin, commits as the App on `op/{id}`, opens the PR, squash auto-merge; `abandon`      |
-| `validate-desired-state.yml` | tenants, deployments            | `pull_request`, `pull_request_review` | Required check `validate-desired-state / validate`, offline, at the pin of the one environment changed |
-| `apply-state.yml`            | deployments (`state: platform`) | push to `main`, `workflow_dispatch`   | Platform apply with the safeguards and a run report, then dispatches the tenants apply                 |
-| `apply-state.yml`            | tenants (`state: tenants`)      | push to `main`, `workflow_dispatch`   | Tenants apply once the platform apply covers the pin (R5), with the safeguards and a run report        |
-| `validate-environments.yml`  | environments                    | `pull_request`, push to `main`        | Required check `validate-environments / validate`; dispatches the platform apply after a merge         |
-| `infra-checks.yml`           | infra                           | `pull_request`                        | Required checks `infra-checks / validate`, `lint`, `schemas`, `catalogue`, `security` (checkov)        |
-| `release.yml`                | infra (`kind: infra`), this     | push to `main`                        | release-please; infra submits `autoPin` pins; this repository moves the major tag                      |
-| `release-merge.yml`          | infra, this                     | `workflow_run` of the PR checks       | The App merges the release-please PR once every check `main` requires has passed                       |
-| `prune-op-branches.yml`      | tenants, deployments            | nightly `schedule`                    | Deletes `op/*` branches older than seven days with no open PR (R7)                                     |
-| `workflow-checks.yml`        | this repository                 | `pull_request`                        | `actionlint` and shellcheck, unit and script tests, lint and audit                                     |
+| Workflow                     | Called from                     | Trigger in the caller                 | Does                                                                                                                                       |
+| ---------------------------- | ------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `submit-desired-state.yml`   | tenants, deployments            | `workflow_dispatch` (`submit.yml`)    | Validates at the pin, commits as the App on `op/{id}`, opens the PR, squash auto-merge; `abandon`                                          |
+| `validate-desired-state.yml` | tenants, deployments            | `pull_request`, `pull_request_review` | Required check `validate-desired-state / validate`, offline, at the pin of the one environment changed                                     |
+| `apply-state.yml`            | deployments (`state: platform`) | push to `main`, `workflow_dispatch`   | Platform apply with the safeguards and a run report, then dispatches the tenants apply                                                     |
+| `apply-state.yml`            | tenants (`state: tenants`)      | push to `main`, `workflow_dispatch`   | Tenants apply once the platform apply covers the pin (R5), with the safeguards and a run report; purges the Entra registrations it removed |
+| `validate-environments.yml`  | environments                    | `pull_request`, push to `main`        | Required check `validate-environments / validate`; dispatches the platform apply after a merge                                             |
+| `infra-checks.yml`           | infra                           | `pull_request`                        | Required checks `infra-checks / validate`, `lint`, `schemas`, `catalogue`, `security` (checkov)                                            |
+| `release.yml`                | infra (`kind: infra`), this     | push to `main`                        | release-please; infra submits `autoPin` pins; this repository moves the major tag                                                          |
+| `release-merge.yml`          | infra, this                     | `workflow_run` of the PR checks       | The App merges the release-please PR once every check `main` requires has passed                                                           |
+| `prune-op-branches.yml`      | tenants, deployments            | nightly `schedule`                    | Deletes `op/*` branches older than seven days with no open PR (R7)                                                                         |
+| `workflow-checks.yml`        | this repository                 | `pull_request`                        | `actionlint` and shellcheck, unit and script tests, lint and audit                                                                         |
 
 A push applies every environment whose folder changed since its last successful apply, so a run superseded
 by a newer one (R1) loses nothing; a dispatch applies the environment it names.
 
 ## How they are built
 
+Every tool comes from its vendor's action: `hashicorp/setup-terraform`, `azure/login`,
+`terraform-linters/setup-tflint`, `bridgecrewio/checkov-action`, `googleapis/release-please-action`,
+actionlint's own image and GitHub's `actions/*`. No vendor action runs Terraform against an `azurerm`
+backend (HashiCorp's `tfc-workflows-github` drives HCP Terraform); `setup-terraform` installs the CLI for
+later `run` steps to call, so the apply job runs it from `apply.sh`, which adds only what is this
+platform's own: re-validation (R4), the CCoE-named backend, plan-guard (R2), break-glass, the Entra purge
+and the run report. Terraform signs in to Azure by OIDC through `ARM_*` variables; the purge signs in
+`az` with `azure/login`.
+
 | Part                                          | What                                                                                                                                                                     |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [`gitops`](.github/actions/gitops/action.yml) | Runs one command from [`src/`](src) through `actions/github-script` with its authenticated Octokit, REST API version `2026-03-10`, retries on transient errors           |
 | [`setup`](.github/actions/setup/action.yml)   | Checks out `ai-platform-infra` at a commit, fails fast on `compat.json`, installs Terraform at `.terraform-version` with a provider cache, and the `aip-checks` CLI      |
 | [`src/`](src)                                 | The GitOps logic: resolving what to apply, preflight (R1), submit, abandon, prune, validation facts, dispatches, the release merge, the major tag and the `autoPin` pins |
-| [`scripts/`](scripts)                         | `apply.sh` (plan, apply, report), `desired-state.sh` (validate, stage), `setup.sh` and `infra-checks.sh`                                                                 |
+| [`scripts/`](scripts)                         | `apply.sh` (plan, apply, purge, report), `desired-state.sh` (validate, stage), `setup.sh` and `infra-checks.sh`                                                          |
 
 Workflows hold no inline logic: parameters reach the modules and scripts as `AIP_*` variables, never by
 interpolating an expression into a script. Each job mints its own App token with only the permissions and

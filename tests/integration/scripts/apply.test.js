@@ -6,6 +6,38 @@ import { createWorkspace } from '../../helpers/scripts.js'
 const GUID = '6c3f7a1e-2b4d-4e8f-9a0b-1c2d3e4f5a6b'
 const HEAD = '1'.repeat(40)
 const LEASE = '0d4e9c1a-7b3f-4e2d-8a6c-5f1e2d3c4b5a'
+const CDP = {
+  issuer:
+    'https://00000000-0000-0000-0000-000000000000.tokens.sts.global.api.aws',
+  awsAccount: '000000000000',
+  audience: 'api://AzureADTokenExchange'
+}
+const APP = '7a1d2b3c-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+const PRINCIPAL = '8b2e3c4d-5f6a-4b7c-9d8e-0f1a2b3c4d5e'
+
+// A saved plan that removes one team's registration and service principal.
+function removesRegistration() {
+  return JSON.stringify({
+    resource_changes: [
+      {
+        type: 'azuread_service_principal',
+        change: { actions: ['delete'], before: { object_id: PRINCIPAL } }
+      },
+      {
+        type: 'azuread_application',
+        change: { actions: ['delete'], before: { object_id: APP } }
+      },
+      {
+        type: 'azurerm_api_management_api',
+        change: { actions: ['delete'], before: { name: 'beta' } }
+      },
+      {
+        type: 'azuread_application',
+        change: { actions: ['update'], before: { object_id: GUID } }
+      }
+    ]
+  })
+}
 
 let workspace
 
@@ -13,6 +45,12 @@ beforeEach(() => {
   workspace = createWorkspace()
   workspace.write('config/global.tfvars.json', '{}\n')
   workspace.write('config/environments/infradev/platform.tfvars.json', '{}\n')
+  workspace.write(
+    'config/registry.json',
+    JSON.stringify({
+      environments: [{ name: 'infradev', cdp: { environment: 'dev', ...CDP } }]
+    })
+  )
   for (const root of ['names', 'platform', 'tenants']) {
     mkdirSync(join(workspace.dir, 'infra', root), { recursive: true })
   }
@@ -117,13 +155,39 @@ describe('apply.sh plan', () => {
         line.includes('/tenants plan')
       )
     ).toContain(
-      '-var environment=infradev -var platform_state={"container_name":"tfstate",' +
+      `-var environment=infradev -var cdp=${JSON.stringify(CDP)} ` +
+        '-var platform_state={"container_name":"tfstate",' +
         '"resource_group_name":"SNDAIPINFRGP1402","storage_account_name":"sndaipinfsto1401",' +
         '"key":"platform.tfstate"}'
     )
     expect(command('checks plan-guard')).toEqual([
       `checks plan-guard --plan plan.json --state tenants --repo state --head ${HEAD} --environment infradev --base b1`
     ])
+    expect(workspace.outputs()).toEqual({ entra_deletes: '0' })
+  })
+
+  test('counts the Entra objects the plan deletes, for the purge', () => {
+    workspace.write('removes.json', removesRegistration())
+
+    const result = run('plan', {
+      AIP_STATE: 'tenants',
+      AIP_TEST_PLAN: workspace.path('removes.json')
+    })
+
+    expect(result.status).toBe(0)
+    expect(workspace.outputs()).toEqual({ entra_deletes: '2' })
+  })
+
+  test('refuses a tenants plan for an environment with no CDP trust', () => {
+    workspace.write('config/registry.json', '{"environments":[]}')
+
+    const result = run('plan', { AIP_STATE: 'tenants' })
+
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain(
+      '::error::registry.json has no cdp trust for infradev'
+    )
+    expect(command('terraform -chdir=').join('\n')).not.toContain(' plan ')
   })
 
   test.each([
@@ -223,6 +287,47 @@ describe('apply.sh apply', () => {
   })
 })
 
+describe('apply.sh purge', () => {
+  function deletedItem(id) {
+    return (
+      'az rest --method delete ' +
+      `--url https://graph.microsoft.com/v1.0/directory/deletedItems/${id} ` +
+      '--only-show-errors'
+    )
+  }
+
+  test('permanently deletes the Entra objects the apply removed', () => {
+    workspace.write('plan.json', removesRegistration())
+
+    const result = run('purge', { AIP_STATE: 'tenants' })
+
+    expect(result.status).toBe(0)
+    expect(command('az')).toEqual([deletedItem(PRINCIPAL), deletedItem(APP)])
+    expect(result.stdout).toContain(`Permanently deleted Entra object ${APP}`)
+  })
+
+  test('warns, and still succeeds, when an object cannot be purged', () => {
+    workspace.write('plan.json', removesRegistration())
+
+    const result = run('purge', {
+      AIP_STATE: 'tenants',
+      AIP_TEST_FAIL: PRINCIPAL,
+      AIP_RETRY_SECONDS: '0'
+    })
+
+    expect(result.status).toBe(0)
+    expect(command('az')).toEqual([
+      deletedItem(PRINCIPAL),
+      deletedItem(PRINCIPAL),
+      deletedItem(PRINCIPAL),
+      deletedItem(APP)
+    ])
+    expect(result.stdout).toContain(
+      `::warning::Entra object ${PRINCIPAL} is still in deleted items`
+    )
+  })
+})
+
 describe('apply.sh report', () => {
   test('reports the run from everything the earlier steps left', () => {
     workspace.write('plan.json', '{}')
@@ -243,6 +348,7 @@ describe('apply.sh report', () => {
     expect(workspace.summary()).toContain(
       '### success\n\nChanges: 2 to add, 1 to change, 0 to destroy\n\nOperations: op-00000001'
     )
+    expect(workspace.summary()).toContain('Entra objects in this state: 4')
   })
 
   test('reports a run that never initialised Terraform', () => {
@@ -260,5 +366,5 @@ test('apply.sh explains how to call it', () => {
   const result = run('destroy')
 
   expect(result.status).toBe(2)
-  expect(result.stderr).toContain('usage: apply.sh plan|apply|report')
+  expect(result.stderr).toContain('usage: apply.sh plan|apply|purge|report')
 })

@@ -5,6 +5,8 @@
 #                    backend from the naming module, break-glass unlock (R6),
 #                    a saved plan and plan-guard (R2)
 #   apply.sh apply   applies the saved plan
+#   apply.sh purge   permanently deletes the Entra registrations the apply
+#                    removed, after az has signed in
 #   apply.sh report  the run report (R3, R12), whatever happened before it
 #
 # Runs in the workspace that holds state/ (this repository), config/ (from
@@ -12,6 +14,8 @@
 # In: AIP_STATE, AIP_ENVIRONMENT, AIP_RELEASE, AIP_ENTRA_ENABLED, AIP_BASE,
 #     AIP_INFRA, AIP_CHECKS, AIP_CONFIG, AIP_OUTCOME (report), the break-glass
 #     AIP_BREAK_GLASS, AIP_ALLOW_DESTROY and AIP_FORCE_UNLOCK, and ARM_*.
+# Out: entra_deletes in GITHUB_OUTPUT (plan), how many Entra objects the plan
+#      deletes.
 set -euo pipefail
 
 state="${AIP_STATE:?}"
@@ -22,6 +26,8 @@ root="$infra/$state"
 global="$config/global.tfvars.json"
 params="$config/environments/$environment/platform.tfvars.json"
 report_file="run-report-$environment.json"
+graph="https://graph.microsoft.com/v1.0"
+entra_objects='select(.type == "azuread_application" or .type == "azuread_service_principal")'
 
 checks() {
   node "${AIP_CHECKS:?}" "$@"
@@ -86,11 +92,18 @@ plan() {
   if [[ "$state" == "platform" ]]; then
     vars+=(-var-file="$global" -var-file="$params")
   else
-    vars+=(-var "environment=$environment"
+    # Every CDP federation takes its issuer, account and audience from here.
+    local cdp
+    cdp="$(jq -c --arg name "$environment" \
+      '.environments[] | select(.name == $name) | .cdp // empty | {issuer, awsAccount, audience}' \
+      "$config/registry.json")"
+    [[ -n "$cdp" ]] || fail "registry.json has no cdp trust for $environment"
+    vars+=(-var "environment=$environment" -var "cdp=$cdp"
       -var "platform_state=$(jq -c '. + {key: "platform.tfstate"}' <<< "$location")")
   fi
   terraform -chdir="$root" plan -input=false -lock-timeout=15m -out=tfplan "${vars[@]}"
   terraform -chdir="$root" show -json tfplan > plan.json
+  echo "entra_deletes=$(jq "[.resource_changes[]? | $entra_objects | select(.change.actions | index(\"delete\"))] | length" plan.json)" >> "$GITHUB_OUTPUT"
 
   local guard=(--plan plan.json --state "$state")
   if [[ "$state" == "tenants" ]]; then
@@ -109,6 +122,27 @@ plan() {
 apply() {
   terraform -chdir="$root" apply -input=false -lock-timeout=15m -json tfplan |
     tee apply.jsonl | jq -r '."@message"'
+}
+
+# Entra keeps a deleted application or service principal for 30 days, and
+# until then it counts towards the deploy identity's created-object limit,
+# so the ones this apply deleted are deleted for good. A purge that fails
+# warns rather than fails: the apply itself succeeded.
+purge() {
+  local ids id attempt
+  mapfile -t ids < <(jq -r ".resource_changes[]? | $entra_objects
+    | select(.change.actions | index(\"delete\")) | .change.before.object_id" plan.json)
+
+  for id in "${ids[@]}"; do
+    for attempt in 1 2 3; do
+      if az rest --method delete --url "$graph/directory/deletedItems/$id" --only-show-errors; then
+        echo "Permanently deleted Entra object $id"
+        continue 2
+      fi
+      sleep "$((attempt * ${AIP_RETRY_SECONDS:-10}))"
+    done
+    echo "::warning::Entra object $id is still in deleted items; it counts towards the deploy identity's limit until Entra removes it after 30 days"
+  done
 }
 
 report() {
@@ -141,13 +175,15 @@ report() {
     "",
     "Operations: \([.operations[].operationIds[]] | join(", "))",
     "",
-    "Failing teams: \(.failingTeams | join(", "))"' "$report_file" >> "$GITHUB_STEP_SUMMARY"
+    "Failing teams: \(.failingTeams | join(", "))",
+    "",
+    "Entra objects in this state: \(.entraObjects // "not planned")"' "$report_file" >> "$GITHUB_STEP_SUMMARY"
 }
 
 case "${1:-}" in
-  plan | apply | report) "$1" ;;
+  plan | apply | purge | report) "$1" ;;
   *)
-    echo "usage: apply.sh plan|apply|report" >&2
+    echo "usage: apply.sh plan|apply|purge|report" >&2
     exit 2
     ;;
 esac

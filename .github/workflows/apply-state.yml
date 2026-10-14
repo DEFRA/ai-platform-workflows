@@ -129,11 +129,26 @@ jobs:
           checks: 'true'
 
       - name: Plan and guard the plan (R4, R6, R2)
+        id: plan
         run: bash "$AIP_SCRIPTS/apply.sh" plan
 
       - name: Apply the saved plan
         id: apply
         run: bash "$AIP_SCRIPTS/apply.sh" apply
+
+      # Deleted Entra registrations count towards the deploy identity's
+      # created-object limit for 30 days unless purged (direction 14 October
+      # 2026, 3A). Graph allows it with Application.ReadWrite.OwnedBy.
+      - if: steps.apply.outcome == 'success' && steps.plan.outputs.entra_deletes != '0'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Permanently delete the removed Entra registrations
+        if: steps.apply.outcome == 'success' && steps.plan.outputs.entra_deletes != '0'
+        run: bash "$AIP_SCRIPTS/apply.sh" purge
 
       - name: Run report (R3, R12)
         if: always() && env.AIP_SCRIPTS != ''

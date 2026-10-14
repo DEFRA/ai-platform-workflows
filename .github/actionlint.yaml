@@ -1,0 +1,11 @@
+# actionlint 1.7.12 (the latest, March 2026) predates the GA of the Ubuntu
+# 26.04 hosted image, and knows actions/create-github-app-token only up to v2:
+# v3 deprecates app-id for client-id.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
+paths:
+  .github/workflows/**/*.yml:
+    ignore:
+      - 'input "client-id" is not defined in action "actions/create-github-app-token@v3"'
+      - 'missing input "app-id" which is required by action "actions/create-github-app-token@v3"'

@@ -1,0 +1,39 @@
+name: Release merge
+
+# Direction 13 October 2026 (10B): the App merges the release-please pull
+# request, as the ruleset's bypass actor, once every check that main requires
+# has passed on its head, so an infra merge reaches Infradev with no manual
+# step. Called on workflow_run completion of the pull request checks.
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  merge:
+    name: merge
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'release-please--branches--')
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    environment:
+      name: release
+      deployment: false
+    permissions: {}
+    steps:
+      - id: merger
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: read
+
+      - uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        with:
+          command: merge-release
+          token: ${{ steps.merger.outputs.token }}

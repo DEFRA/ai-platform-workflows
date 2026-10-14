@@ -1,0 +1,19 @@
+name: Main
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: ./.github/workflows/release.yml
+    permissions:
+      contents: read
+    with:
+      kind: workflows

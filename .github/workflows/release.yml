@@ -1,0 +1,82 @@
+name: Release
+
+# release-please with the GitHub App's token, because a tag created with
+# GITHUB_TOKEN starts no workflow. ai-platform-workflows: moves the major tag
+# to the release. ai-platform-infra: submits a pin of the release for every
+# registry entry with autoPin (D9).
+
+on:
+  workflow_call:
+    inputs:
+      kind:
+        description: infra or workflows.
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    environment:
+      name: release
+      deployment: false
+    permissions:
+      contents: read
+    steps:
+      - id: releaser
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+
+      - id: please
+        uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ steps.releaser.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Move the major tag
+        if: inputs.kind == 'workflows' && steps.please.outputs.release_created == 'true'
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        with:
+          command: move-major-tag
+          token: ${{ steps.releaser.outputs.token }}
+        env:
+          AIP_TAG: ${{ steps.please.outputs.tag_name }}
+          AIP_SHA: ${{ steps.please.outputs.sha }}
+
+      - id: pinner
+        if: inputs.kind == 'infra' && steps.please.outputs.release_created == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          repositories: ai-platform-environments,ai-platform-deployments
+          permission-contents: read
+          permission-actions: write
+
+      - if: steps.pinner.outcome == 'success'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.please.outputs.sha }}
+          path: release
+          persist-credentials: false
+
+      - name: Submit the pin for every autoPin environment
+        if: steps.pinner.outcome == 'success'
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        with:
+          command: submit-auto-pins
+          token: ${{ steps.pinner.outputs.token }}
+        env:
+          AIP_TAG: ${{ steps.please.outputs.tag_name }}
+          AIP_SHA: ${{ steps.please.outputs.sha }}
+          AIP_CANONICAL_MODULE: release/checks/src/canonical-json.js

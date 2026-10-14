@@ -1,0 +1,52 @@
+name: Workflow checks
+
+# Required checks on ai-platform-workflows pull requests:
+# `workflow-checks / actionlint` (with shellcheck of the scripts) and
+# `workflow-checks / tests`.
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: raven-actions/actionlint@v2
+        with:
+          version: 1.7.12
+
+      - run: shellcheck scripts/*.sh
+
+  tests:
+    name: tests
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - run: npm run lint
+
+      - run: npm test
+
+      - run: npm audit --audit-level=moderate

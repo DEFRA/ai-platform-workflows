@@ -1,0 +1,66 @@
+name: Validate environments
+
+# ai-platform-environments. On a pull request, the required check
+# `validate-environments / validate`: the registry and every environment's
+# effective parameters over global.tfvars.json against the latest
+# ai-platform-infra release, public settings only in Infradev and the
+# Sandbox, and no placeholder values. After a merge, dispatches the platform
+# apply for each environment whose parameters changed.
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  validate:
+    name: validate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: environments
+          persist-credentials: false
+
+      - name: Find the latest ai-platform-infra release
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        with:
+          command: latest-release
+
+      - uses: DEFRA/ai-platform-workflows/.github/actions/setup@v1
+        with:
+          sha: ${{ env.AIP_SHA }}
+          checks: 'true'
+
+      - name: Validate
+        run: node "$AIP_CHECKS" environments --infra "$AIP_INFRA" --environments environments --reject-placeholders
+
+  apply:
+    name: dispatch platform apply
+    if: github.event_name == 'push'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    environment:
+      name: gitops-dispatch
+      deployment: false
+    permissions:
+      contents: read
+    steps:
+      - id: dispatcher
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          repositories: ai-platform-deployments
+          permission-actions: write
+          permission-contents: read
+
+      - uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        with:
+          command: dispatch-changed-environments
+          app-token: ${{ steps.dispatcher.outputs.token }}

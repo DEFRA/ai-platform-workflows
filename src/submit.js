@@ -207,10 +207,12 @@ async function reported(core, outcome, pull = null) {
 }
 
 /**
- * prepare-submit: checks the dispatch inputs, then resolves the release the
- * change is validated at and copies the environment's parameters to
- * AIP_CONFIG. Nothing is written to Git when this fails (`checks-failed`).
- * Exports AIP_KIND, AIP_RELEASE, AIP_SHA and AIP_DOCUMENT_FILE.
+ * prepare-submit: checks the dispatch inputs, reports an operation that
+ * already has a pull request (`existing`, exporting AIP_OUTCOME), and
+ * otherwise resolves the release the change is validated at and copies the
+ * environment's parameters to AIP_CONFIG. Nothing is written to Git when
+ * this fails (`checks-failed`). Exports AIP_KIND, AIP_RELEASE, AIP_SHA and
+ * AIP_DOCUMENT_FILE.
  *
  * Inputs: AIP_ACTION, AIP_ENVIRONMENT, AIP_PATH, AIP_DOCUMENT,
  * AIP_OPERATION_ID, AIP_EXPECTED_REVISION, AIP_REQUESTED_BY,
@@ -231,6 +233,19 @@ async function prepareSubmit({ github, app, context, core, env }) {
 
   if (env.AIP_ACTION === 'abandon') {
     return { kind }
+  }
+
+  // Idempotent per operation: a retry after the pull request was raised, or
+  // merged, reports it rather than failing on a revision main has moved past.
+  const existing = await operationPullRequest(
+    github,
+    context.repo,
+    env.AIP_OPERATION_ID
+  )
+
+  if (existing) {
+    core.exportVariable('AIP_OUTCOME', 'existing')
+    return { kind, ...(await reported(core, 'existing', existing)) }
   }
 
   const environment = environmentName(env.AIP_ENVIRONMENT)

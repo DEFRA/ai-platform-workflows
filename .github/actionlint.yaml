@@ -1,6 +1,7 @@
 # actionlint 1.7.12 (the latest, March 2026) predates the GA of the Ubuntu
 # 26.04 hosted image, and knows actions/create-github-app-token only up to v2:
-# v3 deprecates app-id for client-id.
+# v3 deprecates app-id for client-id. It also predates concurrency's queue key
+# (docs.github.com, Control the concurrency of workflows and jobs).
 self-hosted-runner:
   labels:
     - ubuntu-26.04
@@ -9,3 +10,4 @@ paths:
     ignore:
       - 'input "client-id" is not defined in action "actions/create-github-app-token@v3"'
       - 'missing input "app-id" which is required by action "actions/create-github-app-token@v3"'
+      - 'unexpected key "queue" for "concurrency" section'

@@ -70,9 +70,9 @@ function tagResolves() {
   nock(API).get(`${INFRA}/git/ref/tags%2Fv0.4.0`).reply(200, gitRef(INFRA_SHA))
 }
 
-function noOperationPullRequest() {
+function noOperationPullRequest(repo = TENANTS) {
   nock(API)
-    .get(`${TENANTS}/pulls`)
+    .get(`${repo}/pulls`)
     .query({ head: `${OWNER}:op/${OPERATION}`, state: 'all', per_page: '10' })
     .reply(200, [])
 }
@@ -155,6 +155,7 @@ describe('prepareSubmit', () => {
   })
 
   test('resolves a team file at the environment pin and stages its inputs', async () => {
+    noOperationPullRequest()
     nock(API)
       .get(`${DEPLOYMENTS}/contents/environments%2Finfradev%2Fplatform.json`)
       .query({ ref: 'main' })
@@ -176,6 +177,7 @@ describe('prepareSubmit', () => {
   })
 
   test("validates an environment's first pin at its own release", async () => {
+    noOperationPullRequest(DEPLOYMENTS)
     nock(API)
       .get(`${DEPLOYMENTS}/contents/environments%2Finfradev%2Fplatform.json`)
       .query({ ref: 'main' })
@@ -199,6 +201,8 @@ describe('prepareSubmit', () => {
   })
 
   test('refuses a pin document that is not JSON', async () => {
+    noOperationPullRequest(DEPLOYMENTS)
+
     await expect(
       prepareSubmit(
         commandInput(
@@ -212,6 +216,27 @@ describe('prepareSubmit', () => {
         )
       )
     ).rejects.toMatchObject({ message: 'document is not JSON' })
+  })
+
+  test('reports the pull request a retried operation already has', async () => {
+    nock(API)
+      .get(`${TENANTS}/pulls`)
+      .query(true)
+      .reply(200, [pullRequest({ state: 'closed', merged_at: '2026-10-14' })])
+
+    await expect(
+      prepareSubmit(commandInput({ env: submission() }))
+    ).resolves.toEqual({
+      kind: 'tenants',
+      outcome: 'existing',
+      number: 7,
+      url: 'https://github.com/DEFRA/ai-platform-tenants/pull/7'
+    })
+    expect(exportedVariables()).toEqual({
+      AIP_KIND: 'tenants',
+      AIP_OUTCOME: 'existing'
+    })
+    expect(jobSummary()).toContain('### existing')
   })
 
   test('needs no pin to abandon', async () => {

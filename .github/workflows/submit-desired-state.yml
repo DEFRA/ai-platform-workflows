@@ -54,11 +54,15 @@ jobs:
     environment:
       name: gitops-writer
       deployment: false
+    # One submit per file at a time; every queued submit waits its turn
+    # (queue: max) rather than replacing the one already waiting.
     concurrency:
       group: submit-${{ inputs.path || inputs.operation_id }}
       cancel-in-progress: false
+      queue: max
     permissions:
       contents: read
+      pull-requests: read
     env:
       AIP_ACTION: ${{ inputs.action }}
       AIP_ENVIRONMENT: ${{ inputs.environment }}
@@ -86,6 +90,7 @@ jobs:
           app-token: ${{ steps.reader.outputs.token }}
 
       - id: writer
+        if: env.AIP_OUTCOME != 'existing'
         uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
@@ -101,27 +106,27 @@ jobs:
           command: abandon
           token: ${{ steps.writer.outputs.token }}
 
-      - if: inputs.action != 'abandon'
+      - if: inputs.action != 'abandon' && env.AIP_OUTCOME != 'existing'
         uses: actions/checkout@v7
         with:
           ref: main
           path: state
           persist-credentials: false
 
-      - if: inputs.action != 'abandon'
+      - if: inputs.action != 'abandon' && env.AIP_OUTCOME != 'existing'
         uses: DEFRA/ai-platform-workflows/.github/actions/setup@v1
         with:
           sha: ${{ env.AIP_SHA }}
           checks: 'true'
 
       - name: Stage and validate the change
-        if: inputs.action != 'abandon'
+        if: inputs.action != 'abandon' && env.AIP_OUTCOME != 'existing'
         env:
           AIP_AUTHOR: ${{ steps.writer.outputs.app-slug }}[bot]
         run: bash "$AIP_SCRIPTS/desired-state.sh" stage
 
       - name: Commit and raise the pull request
-        if: inputs.action != 'abandon'
+        if: inputs.action != 'abandon' && env.AIP_OUTCOME != 'existing'
         uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
         with:
           command: submit

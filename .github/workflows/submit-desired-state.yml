@@ -96,7 +96,7 @@ jobs:
           AIP_APP_SLUG: ${{ steps.reader.outputs.app-slug }}
 
       - id: writer
-        if: env.AIP_OUTCOME != 'existing'
+        if: env.AIP_OUTCOME != 'existing' || env.AIP_REPAIR == 'true'
         uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
@@ -131,8 +131,10 @@ jobs:
           AIP_AUTHOR: ${{ steps.writer.outputs.app-slug }}[bot]
         run: bash "$AIP_SCRIPTS/desired-state.sh" stage
 
-      - name: Commit and raise the pull request
-        if: inputs.action != 'abandon' && env.AIP_OUTCOME != 'existing'
+      - name: Commit and raise the pull request, or complete an existing one
+        if: >-
+          inputs.action != 'abandon' &&
+          (env.AIP_OUTCOME != 'existing' || env.AIP_REPAIR == 'true')
         uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
         with:
           command: submit

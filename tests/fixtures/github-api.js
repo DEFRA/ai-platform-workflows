@@ -103,7 +103,7 @@ function pullRequest(overrides = {}) {
     html_url: 'https://github.com/DEFRA/ai-platform-tenants/pull/7',
     state: 'open',
     merged_at: null,
-    user: { login: 'ai-platform-orchestrator[bot]' },
+    user: { login: 'ai-platform-orchestrator[bot]', type: 'Bot' },
     labels: [{ name: 'gitops' }, { name: 'env:infradev' }],
     head: { ref: 'op/000000000000000000000001', sha: 'b'.repeat(40) },
     base: { ref: 'main', sha: SHA },

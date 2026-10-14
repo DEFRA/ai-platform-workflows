@@ -2,7 +2,12 @@ import { dispatchApply, preflight, resolveApply } from './apply.js'
 import { dispatchChangedEnvironments, latestRelease } from './environments.js'
 import { withApiVersion, writeSummary } from './github.js'
 import { OutcomeError } from './gitops.js'
-import { mergeRelease, moveMajorTag, submitAutoPins } from './release.js'
+import {
+  mergeRelease,
+  moveMajorTag,
+  resolveRelease,
+  submitAutoPins
+} from './release.js'
 import { abandon, prepareSubmit, prune, submit } from './submit.js'
 import { prepareValidation } from './validate.js'
 
@@ -18,6 +23,7 @@ const COMMANDS = {
   'prepare-validation': prepareValidation,
   prune,
   'resolve-apply': resolveApply,
+  'resolve-release': resolveRelease,
   submit,
   'submit-auto-pins': submitAutoPins
 }

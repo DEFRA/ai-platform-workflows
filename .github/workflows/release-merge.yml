@@ -15,7 +15,7 @@ jobs:
     name: merge
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_branch, 'release-please--branches--')
+      github.event.workflow_run.head_branch == 'release-please--branches--main'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     environment:
@@ -37,3 +37,5 @@ jobs:
         with:
           command: merge-release
           token: ${{ steps.merger.outputs.token }}
+        env:
+          AIP_APP_SLUG: ${{ steps.merger.outputs.app-slug }}

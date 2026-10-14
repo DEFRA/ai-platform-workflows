@@ -9,7 +9,7 @@ import {
 } from './github.js'
 import { OutcomeError, pinPath } from './gitops.js'
 
-const RELEASE_BRANCH = 'release-please--branches--'
+const RELEASE_BRANCH = 'release-please--branches--main'
 const RELEASE_TAG = /^(v\d+)\.\d+\.\d+$/
 const COMMIT_SHA = /^[0-9a-f]{40}$/
 const PASSED = new Set(['success', 'neutral', 'skipped'])
@@ -39,25 +39,44 @@ async function requiredChecks(github, { owner, repo }) {
     )
 }
 
+// The release App opened the pull request and wrote every commit on it, so
+// nobody else's change reaches main through the App's bypass. A ruleset lets
+// only the App push to the release branch, which makes this unforgeable.
+async function writtenByReleaseApp(github, { owner, repo }, pull, slug) {
+  const bot = `${slug}[bot]`
+
+  if (pull.user?.type !== 'Bot' || pull.user.login !== bot) {
+    return false
+  }
+
+  const commits = await github.paginate(github.rest.pulls.listCommits, {
+    owner,
+    repo,
+    pull_number: pull.number,
+    per_page: 100
+  })
+
+  return commits.every((commit) => commit.author?.login === bot)
+}
+
 /**
  * merge-release: run when the pull request checks complete. The App merges
  * the open release-please pull request, as the ruleset's bypass actor, once
  * every check main requires has passed on the commit those checks ran on
- * (direction 13 October 2026, 10B). Nothing is merged when main requires no
- * checks.
+ * (direction 13 October 2026, 10B), and only when the release App wrote it.
+ * Nothing is merged when main requires no checks.
+ *
+ * Inputs: AIP_APP_SLUG, the release App.
  *
  * @param {object} input - Command context from main.js; `context.payload`
  *   is the workflow_run event.
  * @returns {Promise<{outcome: string, waiting?: string[]}>} Result.
  */
-async function mergeRelease({ github, context, core }) {
+async function mergeRelease({ github, context, core, env }) {
   const { owner, repo } = context.repo
   const run = context.payload.workflow_run
 
-  if (
-    run?.conclusion !== 'success' ||
-    !run.head_branch?.startsWith(RELEASE_BRANCH)
-  ) {
+  if (run?.conclusion !== 'success' || run.head_branch !== RELEASE_BRANCH) {
     return { outcome: 'not-a-release' }
   }
 
@@ -75,6 +94,15 @@ async function mergeRelease({ github, context, core }) {
       'The release pull request is closed or has moved on; the checks of its new head merge it.'
     ])
     return { outcome: 'not-merged' }
+  }
+
+  if (
+    !(await writtenByReleaseApp(github, context.repo, pull, env.AIP_APP_SLUG))
+  ) {
+    throw new OutcomeError(
+      'not-merged',
+      `${pull.html_url} was not written only by the release App`
+    )
   }
 
   const required = await requiredChecks(github, context.repo)
@@ -121,6 +149,59 @@ async function mergeRelease({ github, context, core }) {
   await writeSummary(core, 'merged', [`Release pull request: ${pull.html_url}`])
 
   return { outcome: 'merged', number: pull.number }
+}
+
+/**
+ * resolve-release: the release this run made. release-please reports a
+ * release only on the run that creates it, so a rerun after a later step
+ * failed finds the release whose tag points at this run's commit, and the
+ * idempotent steps after it (major tag, pins) run again. Exports AIP_TAG and
+ * AIP_SHA when there is a release.
+ *
+ * Inputs: AIP_CREATED, AIP_TAG and AIP_SHA from release-please;
+ * GITHUB_RUN_ATTEMPT.
+ *
+ * @param {object} input - Command context from main.js.
+ * @returns {Promise<{released: boolean, tag?: string, sha?: string}>}
+ */
+async function resolveRelease({ github, context, core, env }) {
+  let release = env.AIP_CREATED === 'true' ? releaseOf(env) : null
+
+  if (!release && env.GITHUB_RUN_ATTEMPT !== '1') {
+    const { data: releases } = await github.rest.repos.listReleases({
+      ...context.repo,
+      per_page: 10
+    })
+
+    for (const candidate of releases) {
+      if (!RELEASE_TAG.test(candidate.tag_name)) {
+        continue
+      }
+
+      // release-please tags through the releases API: lightweight tags.
+      const { data: ref } = await github.rest.git.getRef({
+        ...context.repo,
+        ref: `tags/${candidate.tag_name}`
+      })
+
+      if (ref.object.sha === context.sha) {
+        release = releaseOf({
+          AIP_TAG: candidate.tag_name,
+          AIP_SHA: context.sha
+        })
+        break
+      }
+    }
+  }
+
+  if (!release) {
+    return { released: false }
+  }
+
+  core.exportVariable('AIP_TAG', release.tag)
+  core.exportVariable('AIP_SHA', release.sha)
+
+  return { released: true, tag: release.tag, sha: release.sha }
 }
 
 /**
@@ -235,4 +316,4 @@ async function submitAutoPins({ github, context, core, env }) {
   return { submitted }
 }
 
-export { mergeRelease, moveMajorTag, submitAutoPins }
+export { mergeRelease, moveMajorTag, resolveRelease, submitAutoPins }

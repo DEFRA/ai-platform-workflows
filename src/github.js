@@ -128,6 +128,42 @@ async function lastApplied(octokit, { owner, repo, environment }) {
 }
 
 /**
+ * The newest deployment to an environment, and whether it succeeded, so a
+ * later failure is never hidden behind an earlier success at the same
+ * commit (a parameters change re-applies the same commit).
+ *
+ * @param {object} octokit - Client that can read the repository.
+ * @param {{owner: string, repo: string, environment: string}} target
+ * @returns {Promise<{sha: string, succeeded: boolean} | null>} Null before
+ *   the first deployment.
+ */
+async function latestDeployment(octokit, { owner, repo, environment }) {
+  const { data: deployments } = await octokit.rest.repos.listDeployments({
+    owner,
+    repo,
+    environment,
+    per_page: 1
+  })
+  const deployment = deployments[0]
+
+  if (!deployment) {
+    return null
+  }
+
+  const { data: statuses } = await octokit.rest.repos.listDeploymentStatuses({
+    owner,
+    repo,
+    deployment_id: deployment.id,
+    per_page: 1
+  })
+
+  return {
+    sha: deployment.sha,
+    succeeded: SUCCEEDED_DEPLOYMENT_STATES.has(statuses[0]?.state)
+  }
+}
+
+/**
  * The commit at the head of main.
  *
  * @param {object} octokit - Client that can read the repository.
@@ -326,6 +362,7 @@ export {
   headOfMain,
   includesCommit,
   lastApplied,
+  latestDeployment,
   readFile,
   readJson,
   tagCommit,

@@ -83,6 +83,20 @@ function lastDeployment(repo, sha, state = 'success') {
   }
 }
 
+function latestPlatformDeployment(sha, state = 'success') {
+  nock(API)
+    .get(`${DEPLOYMENTS}/deployments`)
+    .query({ environment: 'infradev', per_page: '1' })
+    .reply(200, sha ? [deployment(9, sha)] : [])
+
+  if (sha) {
+    nock(API)
+      .get(`${DEPLOYMENTS}/deployments/9/statuses`)
+      .query(true)
+      .reply(200, deploymentStatuses(state))
+  }
+}
+
 const INFRADEV_LEG = {
   environment: 'infradev',
   runner: '["ubuntu-26.04"]',
@@ -249,7 +263,7 @@ describe('resolveApply', () => {
       environmentsRepo()
       pinOnMain()
       pinCommittedIn('p1')
-      lastDeployment(DEPLOYMENTS, 'p2')
+      latestPlatformDeployment('p2')
       nock(API)
         .get(`${DEPLOYMENTS}/compare/p1...p2`)
         .query(true)
@@ -268,7 +282,7 @@ describe('resolveApply', () => {
         .reply(200, fileContent(registry()))
       pinOnMain()
       pinCommittedIn('p2')
-      lastDeployment(DEPLOYMENTS, 'p1')
+      latestPlatformDeployment('p1')
       nock(API)
         .get(`${DEPLOYMENTS}/compare/p2...p1`)
         .query(true)
@@ -287,7 +301,22 @@ describe('resolveApply', () => {
         .reply(200, fileContent(registry()))
       pinOnMain()
       pinCommittedIn('p1')
-      lastDeployment(DEPLOYMENTS, null)
+      latestPlatformDeployment(null)
+
+      await expect(resolveApply(tenantsInput())).resolves.toEqual({
+        matrix: []
+      })
+    })
+
+    test('waits when the latest platform apply failed, even after an earlier success (R5)', async () => {
+      headOfMain(TENANTS)
+      nock(API)
+        .get(`${ENVIRONMENTS}/contents/registry.json`)
+        .query(true)
+        .reply(200, fileContent(registry()))
+      pinOnMain()
+      pinCommittedIn('p1')
+      latestPlatformDeployment('p1', 'failure')
 
       await expect(resolveApply(tenantsInput())).resolves.toEqual({
         matrix: []

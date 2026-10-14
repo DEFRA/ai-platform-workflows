@@ -222,6 +222,37 @@ async function pointBranchAt(github, { owner, repo }, branch, sha) {
   }
 }
 
+// The trailers the pull request body carries after its first paragraph.
+function trailersOf(body) {
+  return (body ?? '').split('\n\n').slice(1).join('\n\n').trim()
+}
+
+// Labels the pull request and enables squash auto-merge with the trailers in
+// the squash body, skipping whatever is already in place, so a retry
+// completes a pull request an earlier attempt left part-done.
+async function completePullRequest(github, { owner, repo }, pull, environment) {
+  const labels = ['gitops', `env:${environment}`].filter(
+    (name) => !(pull.labels ?? []).some((label) => label.name === name)
+  )
+
+  if (labels.length > 0) {
+    await github.rest.issues.addLabels({
+      owner,
+      repo,
+      issue_number: pull.number,
+      labels
+    })
+  }
+
+  if (!pull.auto_merge) {
+    await github.graphql(ENABLE_AUTO_MERGE, {
+      id: pull.node_id,
+      headline: `${pull.title} (#${pull.number})`,
+      body: trailersOf(pull.body)
+    })
+  }
+}
+
 async function reported(core, outcome, pull = null) {
   await writeSummary(
     core,
@@ -274,6 +305,11 @@ async function prepareSubmit({ github, app, context, core, env }) {
 
   if (existing) {
     core.exportVariable('AIP_OUTCOME', 'existing')
+
+    if (existing.state === 'open') {
+      core.exportVariable('AIP_REPAIR', 'true')
+    }
+
     return { kind, ...(await reported(core, 'existing', existing)) }
   }
 
@@ -322,7 +358,8 @@ async function prepareSubmit({ github, app, context, core, env }) {
  * submit: writes or removes the validated file on op/{operation} as the App
  * with createCommitOnBranch, opens the pull request, labels it and enables
  * squash auto-merge with the trailers in the squash body. Idempotent per
- * operation: an operation that has a pull request reports it (`existing`).
+ * operation: an operation that has a pull request reports it (`existing`),
+ * first completing the labels and auto-merge of one still open.
  * Another operation's open pull request on the same file is `file-locked`.
  *
  * Inputs: AIP_ACTION, AIP_ENVIRONMENT, AIP_PATH, AIP_DOCUMENT,
@@ -340,6 +377,15 @@ async function submit({ github, context, core, env }) {
   const existing = await operationPullRequest(github, context.repo, operationId)
 
   if (existing) {
+    if (existing.state === 'open') {
+      await completePullRequest(
+        github,
+        context.repo,
+        existing,
+        env.AIP_ENVIRONMENT
+      )
+    }
+
     return reported(core, 'existing', existing)
   }
 
@@ -402,17 +448,7 @@ async function submit({ github, context, core, env }) {
     maintainer_can_modify: false
   })
 
-  await github.rest.issues.addLabels({
-    owner,
-    repo,
-    issue_number: pull.number,
-    labels: ['gitops', `env:${env.AIP_ENVIRONMENT}`]
-  })
-  await github.graphql(ENABLE_AUTO_MERGE, {
-    id: pull.node_id,
-    headline: `${message.headline} (#${pull.number})`,
-    body: message.body
-  })
+  await completePullRequest(github, context.repo, pull, env.AIP_ENVIRONMENT)
 
   return reported(core, 'pr-raised', pull)
 }

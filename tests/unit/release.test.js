@@ -5,6 +5,7 @@ import nock from 'nock'
 import {
   mergeRelease,
   moveMajorTag,
+  resolveRelease,
   submitAutoPins
 } from '../../src/release.js'
 import {
@@ -20,7 +21,14 @@ import {
   registry,
   registryEntry
 } from '../fixtures/gitops-documents.js'
-import { API, commandInput, jobSummary, OWNER } from '../helpers/github.js'
+import {
+  API,
+  commandInput,
+  exportedVariables,
+  jobSummary,
+  OWNER,
+  SHA
+} from '../helpers/github.js'
 
 const INFRA = `/repos/${OWNER}/ai-platform-infra`
 const WORKFLOWS = `/repos/${OWNER}/ai-platform-workflows`
@@ -29,11 +37,12 @@ const DEPLOYMENTS = `/repos/${OWNER}/ai-platform-deployments`
 const BRANCH = 'release-please--branches--main'
 const HEAD = 'b'.repeat(40)
 const REQUIRED = ['infra-checks / validate', 'infra-checks / lint']
+const BOT = 'ai-platform-orchestrator[bot]'
 
 describe('mergeRelease', () => {
   function input(run = {}) {
     return commandInput(
-      {},
+      { env: { AIP_APP_SLUG: 'ai-platform-orchestrator' } },
       {
         repo: 'ai-platform-infra',
         eventName: 'workflow_run',
@@ -58,6 +67,16 @@ describe('mergeRelease', () => {
       .reply(200, pulls)
   }
 
+  function commitsBy(...logins) {
+    nock(API)
+      .get(`${INFRA}/pulls/7/commits`)
+      .query({ per_page: '100' })
+      .reply(
+        200,
+        logins.map((login) => ({ sha: HEAD, author: { login } }))
+      )
+  }
+
   function requiredChecks(contexts = REQUIRED) {
     nock(API)
       .get(`${INFRA}/rules/branches/main`)
@@ -74,6 +93,7 @@ describe('mergeRelease', () => {
 
   test('merges once every required check passed on the head', async () => {
     releasePullRequest()
+    commitsBy(BOT, BOT)
     requiredChecks()
     checksOnHead([
       ['infra-checks / validate', 'completed', 'success'],
@@ -93,6 +113,7 @@ describe('mergeRelease', () => {
 
   test('waits for a required check that has not passed', async () => {
     releasePullRequest()
+    commitsBy(BOT)
     requiredChecks()
     checksOnHead([
       ['infra-checks / validate', 'completed', 'success'],
@@ -109,6 +130,7 @@ describe('mergeRelease', () => {
 
   test('never merges unchecked when main requires no checks', async () => {
     releasePullRequest()
+    commitsBy(BOT)
     requiredChecks([])
 
     await expect(mergeRelease(input())).rejects.toMatchObject({
@@ -127,14 +149,89 @@ describe('mergeRelease', () => {
     expect(jobSummary()).toContain('has moved on')
   })
 
-  test.each([[{ conclusion: 'failure' }], [{ head_branch: 'feature/x' }]])(
-    'ignores a run that is not a green release (%o)',
-    async (run) => {
-      await expect(mergeRelease(input(run))).resolves.toEqual({
-        outcome: 'not-a-release'
+  test('refuses a release pull request a person opened on the release branch', async () => {
+    releasePullRequest([
+      pullRequest({
+        head: { ref: BRANCH, sha: HEAD },
+        user: { login: 'someone', type: 'User' }
       })
+    ])
+
+    await expect(mergeRelease(input())).rejects.toMatchObject({
+      outcome: 'not-merged'
+    })
+  })
+
+  test('refuses a release pull request with a commit someone else wrote', async () => {
+    releasePullRequest()
+    commitsBy(BOT, 'someone')
+
+    await expect(mergeRelease(input())).rejects.toMatchObject({
+      outcome: 'not-merged',
+      message: expect.stringContaining('not written only by the release App')
+    })
+  })
+
+  test.each([
+    [{ conclusion: 'failure' }],
+    [{ head_branch: 'feature/x' }],
+    [{ head_branch: 'release-please--branches--main-x' }]
+  ])('ignores a run that is not a green release (%o)', async (run) => {
+    await expect(mergeRelease(input(run))).resolves.toEqual({
+      outcome: 'not-a-release'
+    })
+  })
+})
+
+describe('resolveRelease', () => {
+  function input(env, attempt = '1') {
+    return commandInput(
+      { env: { GITHUB_RUN_ATTEMPT: attempt, ...env } },
+      { repo: 'ai-platform-infra', eventName: 'push' }
+    )
+  }
+
+  test('takes the release release-please created', async () => {
+    await expect(
+      resolveRelease(
+        input({ AIP_CREATED: 'true', AIP_TAG: 'v1.4.2', AIP_SHA: HEAD })
+      )
+    ).resolves.toEqual({ released: true, tag: 'v1.4.2', sha: HEAD })
+    expect(exportedVariables()).toEqual({ AIP_TAG: 'v1.4.2', AIP_SHA: HEAD })
+  })
+
+  test('finds the release of this commit on a rerun', async () => {
+    nock(API)
+      .get(`${INFRA}/releases`)
+      .query({ per_page: '10' })
+      .reply(200, [{ tag_name: 'v1.4.3' }, { tag_name: 'v1.4.2' }])
+    nock(API)
+      .get(`${INFRA}/git/ref/tags%2Fv1.4.3`)
+      .reply(200, { object: { sha: 'c'.repeat(40) } })
+    nock(API)
+      .get(`${INFRA}/git/ref/tags%2Fv1.4.2`)
+      .reply(200, { object: { sha: SHA } })
+
+    await expect(
+      resolveRelease(input({ AIP_CREATED: 'false' }, '2'))
+    ).resolves.toEqual({ released: true, tag: 'v1.4.2', sha: SHA })
+    expect(exportedVariables().AIP_TAG).toBe('v1.4.2')
+  })
+
+  test.each([
+    ['a first attempt with no release', '1', null],
+    ['a rerun of a commit with no release', '2', [{ tag_name: 'latest' }]]
+  ])('reports no release for %s', async (_, attempt, releases) => {
+    // A first attempt never looks: release-please would have reported it.
+    if (releases) {
+      nock(API).get(`${INFRA}/releases`).query(true).reply(200, releases)
     }
-  )
+
+    await expect(
+      resolveRelease(input({ AIP_CREATED: 'false' }, attempt))
+    ).resolves.toEqual({ released: false })
+    expect(exportedVariables()).toEqual({})
+  })
 })
 
 describe('moveMajorTag', () => {

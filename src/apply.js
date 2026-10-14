@@ -6,6 +6,7 @@ import {
   headOfMain,
   includesCommit,
   lastApplied,
+  latestDeployment,
   readJson,
   verifyRelease,
   writeEnvironmentsConfig,
@@ -59,7 +60,8 @@ async function changedSinceApplied(github, context, environment) {
   return paths === null || paths.some((path) => path.startsWith(`${folder}/`))
 }
 
-// R5: the platform apply has succeeded at the pin's commit or a later one.
+// R5: the platform's latest apply succeeded, at the pin's commit or a
+// later one.
 async function platformApplied(app, owner, environment) {
   const deployments = gitopsRepo(owner, 'deployments')
   const { data: commits } = await app.rest.repos.listCommits({
@@ -68,16 +70,16 @@ async function platformApplied(app, owner, environment) {
     sha: 'main',
     per_page: 1
   })
-  const applied = await lastApplied(app, { ...deployments, environment })
+  const latest = await latestDeployment(app, { ...deployments, environment })
 
-  if (!commits[0] || !applied) {
+  if (!commits[0] || !latest?.succeeded) {
     return false
   }
 
   return includesCommit(app, {
     ...deployments,
     base: commits[0].sha,
-    head: applied
+    head: latest.sha
   })
 }
 

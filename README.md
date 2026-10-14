@@ -64,7 +64,19 @@ the target). Changing it is a registry pull request, not a workflow change.
 
 release-please tags `vX.Y.Z` from conventional commits and moves `vX` through the Git refs API.
 `version.txt` is the running version that `setup` compares with an infra release's `compat.json`. The App
-has no Workflows permission, so a release never edits `.github/workflows/`.
+has no Workflows permission, so a release never edits `.github/workflows/`. A rerun of a release run that
+failed after release-please made the release finds that release and finishes the major tag or the pins.
+Only the release App may push to `release-please--branches--main`, and the release merge checks that the App
+opened the pull request and wrote every commit on it.
+
+The release workflows use this repository's own actions through `@v1`, so `v1` must exist before the first
+release. Once, right after the first pull request merges, point it at `main`; the first release then moves
+it to `v1.0.0`:
+
+```sh
+gh api repos/DEFRA/ai-platform-workflows/git/refs -f ref=refs/tags/v1 \
+  -f sha="$(gh api repos/DEFRA/ai-platform-workflows/git/ref/heads/main --jq .object.sha)"
+```
 
 ## Development
 

@@ -39,6 +39,7 @@ describe('run', () => {
       'prepare-validation',
       'prune',
       'resolve-apply',
+      'resolve-release',
       'submit',
       'submit-auto-pins'
     ])

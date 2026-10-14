@@ -43,18 +43,27 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      # Also on a rerun, which release-please reports as no release, so the
+      # idempotent steps below can finish a run that failed after the release.
+      - name: Find the release this run made
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        with:
+          command: resolve-release
+          token: ${{ steps.releaser.outputs.token }}
+        env:
+          AIP_CREATED: ${{ steps.please.outputs.release_created }}
+          AIP_TAG: ${{ steps.please.outputs.tag_name }}
+          AIP_SHA: ${{ steps.please.outputs.sha }}
+
       - name: Move the major tag
-        if: inputs.kind == 'workflows' && steps.please.outputs.release_created == 'true'
+        if: inputs.kind == 'workflows' && env.AIP_TAG != ''
         uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
         with:
           command: move-major-tag
           token: ${{ steps.releaser.outputs.token }}
-        env:
-          AIP_TAG: ${{ steps.please.outputs.tag_name }}
-          AIP_SHA: ${{ steps.please.outputs.sha }}
 
       - id: pinner
-        if: inputs.kind == 'infra' && steps.please.outputs.release_created == 'true'
+        if: inputs.kind == 'infra' && env.AIP_TAG != ''
         uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
@@ -66,7 +75,7 @@ jobs:
       - if: steps.pinner.outcome == 'success'
         uses: actions/checkout@v7
         with:
-          ref: ${{ steps.please.outputs.sha }}
+          ref: ${{ env.AIP_SHA }}
           path: release
           persist-credentials: false
 
@@ -77,7 +86,5 @@ jobs:
           command: submit-auto-pins
           token: ${{ steps.pinner.outputs.token }}
         env:
-          AIP_TAG: ${{ steps.please.outputs.tag_name }}
-          AIP_SHA: ${{ steps.please.outputs.sha }}
           AIP_CANONICAL_MODULE: release/checks/src/canonical-json.js
           AIP_APP_SLUG: ${{ steps.pinner.outputs.app-slug }}

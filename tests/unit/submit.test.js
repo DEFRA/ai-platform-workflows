@@ -89,6 +89,21 @@ function noOperationPullRequest(repo = TENANTS) {
     .reply(200, [])
 }
 
+// GitHub echoes the title and body it was sent; a new pull request has no
+// labels and no auto-merge.
+function pullRequestCreated(number, matches = () => true) {
+  let sent
+
+  return nock(API)
+    .post(`${TENANTS}/pulls`, (body) => {
+      sent = body
+      return matches(body)
+    })
+    .reply(201, () =>
+      pullRequest({ number, title: sent.title, body: sent.body, labels: [] })
+    )
+}
+
 function openPullRequests(pulls) {
   nock(API)
     .get(`${TENANTS}/pulls`)
@@ -286,6 +301,18 @@ describe('prepareSubmit', () => {
     expect(jobSummary()).toContain('### existing')
   })
 
+  test('asks the next steps to complete a retried operation whose pull request is open', async () => {
+    nock(API).get(`${TENANTS}/pulls`).query(true).reply(200, [pullRequest()])
+
+    await prepareSubmit(commandInput({ env: submission() }))
+
+    expect(exportedVariables()).toMatchObject({
+      AIP_OUTCOME: 'existing',
+      AIP_REPAIR: 'true'
+    })
+    expect(jobSummary()).toContain('### existing')
+  })
+
   test('needs no pin to abandon', async () => {
     await expect(
       prepareSubmit(
@@ -299,7 +326,10 @@ describe('prepareSubmit', () => {
 
 describe('submit', () => {
   test('reports the pull request an operation already has', async () => {
-    nock(API).get(`${TENANTS}/pulls`).query(true).reply(200, [pullRequest()])
+    nock(API)
+      .get(`${TENANTS}/pulls`)
+      .query(true)
+      .reply(200, [pullRequest({ auto_merge: { merge_method: 'squash' } })])
 
     await expect(submit(commandInput({ env: submission() }))).resolves.toEqual({
       outcome: 'existing',
@@ -307,6 +337,36 @@ describe('submit', () => {
       url: 'https://github.com/DEFRA/ai-platform-tenants/pull/7'
     })
     expect(jobSummary()).toContain('### existing')
+  })
+
+  test('completes the labels and auto-merge an earlier attempt left undone', async () => {
+    nock(API)
+      .get(`${TENANTS}/pulls`)
+      .query(true)
+      .reply(200, [
+        pullRequest({
+          title: 'chore(infradev): write alpha',
+          body: `Submitted by the AI Platform.\n\nOperation-Id: ${OPERATION}\n`,
+          labels: [{ name: 'gitops' }]
+        })
+      ])
+    const labels = nock(API)
+      .post(`${TENANTS}/issues/7/labels`, { labels: ['env:infradev'] })
+      .reply(200, [])
+    const autoMerge = nock(API)
+      .post(
+        '/graphql',
+        ({ variables }) =>
+          variables.headline === 'chore(infradev): write alpha (#7)' &&
+          variables.body === `Operation-Id: ${OPERATION}`
+      )
+      .reply(200, { data: { enablePullRequestAutoMerge: {} } })
+
+    await expect(
+      submit(commandInput({ env: submission() }))
+    ).resolves.toMatchObject({ outcome: 'existing', number: 7 })
+    expect(labels.isDone()).toBe(true)
+    expect(autoMerge.isDone()).toBe(true)
   })
 
   test('refuses a file another operation has open', async () => {
@@ -357,14 +417,12 @@ describe('submit', () => {
         )
       })
       .reply(200, { data: { createCommitOnBranch: { commit: { oid: 'b' } } } })
-    nock(API)
-      .post(
-        `${TENANTS}/pulls`,
-        (body) =>
-          body.head === `op/${OPERATION}` &&
-          body.title === 'chore(infradev): write alpha'
-      )
-      .reply(201, pullRequest({ number: 11 }))
+    pullRequestCreated(
+      11,
+      (body) =>
+        body.head === `op/${OPERATION}` &&
+        body.title === 'chore(infradev): write alpha'
+    )
     const labels = nock(API)
       .post(`${TENANTS}/issues/11/labels`, {
         labels: ['gitops', 'env:infradev']
@@ -400,9 +458,7 @@ describe('submit', () => {
       })
       .reply(200, {})
     nock(API).post('/graphql').times(2).reply(200, { data: {} })
-    nock(API)
-      .post(`${TENANTS}/pulls`)
-      .reply(201, pullRequest({ number: 12 }))
+    pullRequestCreated(12)
     nock(API).post(`${TENANTS}/issues/12/labels`).reply(200, [])
 
     await expect(
@@ -422,9 +478,7 @@ describe('submit', () => {
           variables.input?.fileChanges?.deletions?.[0]?.path === PATH
       )
       .reply(200, { data: {} })
-    nock(API)
-      .post(`${TENANTS}/pulls`)
-      .reply(201, pullRequest({ number: 13 }))
+    pullRequestCreated(13)
     nock(API).post(`${TENANTS}/issues/13/labels`).reply(200, [])
     nock(API).post('/graphql').reply(200, { data: {} })
 

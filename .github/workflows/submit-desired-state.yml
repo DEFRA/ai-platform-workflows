@@ -36,6 +36,10 @@ on:
         required: false
         default: '0'
       requested_by:
+        description: >-
+          entra:{object ID} of the person the Portal API signed in, or app:{name}
+          for automation. Honoured only when the workflow's own App dispatches;
+          anyone else is recorded as github:{user ID}.
         type: string
         required: false
         default: ''
@@ -88,6 +92,8 @@ jobs:
         with:
           command: prepare-submit
           app-token: ${{ steps.reader.outputs.token }}
+        env:
+          AIP_APP_SLUG: ${{ steps.reader.outputs.app-slug }}
 
       - id: writer
         if: env.AIP_OUTCOME != 'existing'

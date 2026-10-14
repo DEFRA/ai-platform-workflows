@@ -44,7 +44,7 @@ function pin(overrides = {}) {
     release: 'v0.4.0',
     sha: INFRA_SHA,
     previousRelease: 'v0.3.0',
-    requestedBy: 'release-please',
+    requestedBy: 'app:ai-platform-orchestrator',
     operationId: 'rel-infradev-v0-4-0-1',
     requestedAt: '2026-10-13T00:00:00.000Z',
     ...overrides

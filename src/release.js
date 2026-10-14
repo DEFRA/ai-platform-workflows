@@ -165,8 +165,9 @@ async function moveMajorTag({ github, context, core, env }) {
  * deployments repository's submit workflow (D9). The pin is serialised by
  * the released checks' canonical-json.js, the bytes submit validates.
  *
- * Inputs: AIP_TAG, AIP_SHA, AIP_CANONICAL_MODULE (path of canonical-json.js
- * in the release checkout).
+ * Inputs: AIP_TAG, AIP_SHA, AIP_APP_SLUG (the pins are requested by
+ * app:{slug}), AIP_CANONICAL_MODULE (path of canonical-json.js in the
+ * release checkout).
  *
  * @param {object} input - Command context from main.js; `github` reads
  *   ai-platform-environments and ai-platform-deployments and dispatches in
@@ -176,6 +177,7 @@ async function moveMajorTag({ github, context, core, env }) {
 async function submitAutoPins({ github, context, core, env }) {
   const { tag, sha } = releaseOf(env)
   const { owner } = context.repo
+  const requestedBy = `app:${env.AIP_APP_SLUG}`
   const { canonicalJson } = await import(
     pathToFileURL(resolve(env.AIP_CANONICAL_MODULE)).href
   )
@@ -203,7 +205,7 @@ async function submitAutoPins({ github, context, core, env }) {
       release: tag,
       sha,
       previousRelease: previous?.release ?? null,
-      requestedBy: 'release-please',
+      requestedBy,
       operationId,
       requestedAt: new Date().toISOString()
     }
@@ -216,7 +218,7 @@ async function submitAutoPins({ github, context, core, env }) {
         path,
         document: canonicalJson(pin),
         operation_id: operationId,
-        requested_by: 'release-please'
+        requested_by: requestedBy
       }
     })
 

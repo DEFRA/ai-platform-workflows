@@ -183,6 +183,7 @@ describe('submitAutoPins', () => {
         env: {
           AIP_TAG: 'v0.5.0',
           AIP_SHA: INFRA_SHA,
+          AIP_APP_SLUG: 'ai-platform-orchestrator',
           AIP_CANONICAL_MODULE: join(
             import.meta.dirname,
             '..',
@@ -235,7 +236,7 @@ describe('submitAutoPins', () => {
       environment: 'infradev',
       path: 'environments/infradev/platform.json',
       operation_id: 'rel-infradev-v0-5-0-98765',
-      requested_by: 'release-please'
+      requested_by: 'app:ai-platform-orchestrator'
     })
     expect(sandbox.operation_id).toBe('rel-sandbox-v0-5-0-98765')
 

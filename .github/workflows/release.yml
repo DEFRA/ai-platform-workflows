@@ -80,3 +80,4 @@ jobs:
           AIP_TAG: ${{ steps.please.outputs.tag_name }}
           AIP_SHA: ${{ steps.please.outputs.sha }}
           AIP_CANONICAL_MODULE: release/checks/src/canonical-json.js
+          AIP_APP_SLUG: ${{ steps.pinner.outputs.app-slug }}

@@ -34,7 +34,17 @@ const ENVIRONMENTS = `/repos/${OWNER}/ai-platform-environments`
 const INFRA = `/repos/${OWNER}/ai-platform-infra`
 const OPERATION = '000000000000000000000001'
 const PATH = 'environments/infradev/alpha.json'
-const DOCUMENT = '{\n  "revision": 2\n}\n'
+const PERSON = 'entra:0f8fad5b-d9cb-469f-a165-70867728950e'
+const DOCUMENT = `{\n  "revision": 2,\n  "updatedBy": "${PERSON}"\n}\n`
+// The workflow's own App dispatched the run, for the Portal API.
+const BY_APP = {
+  payload: {
+    sender: { type: 'Bot', login: 'ai-platform-orchestrator[bot]', id: 9 }
+  }
+}
+const BY_ENGINEER = {
+  payload: { sender: { type: 'User', login: 'someone', id: 583231 } }
+}
 
 function submission(env = {}) {
   return {
@@ -44,7 +54,9 @@ function submission(env = {}) {
     AIP_DOCUMENT: DOCUMENT,
     AIP_OPERATION_ID: OPERATION,
     AIP_EXPECTED_REVISION: '1',
-    AIP_REQUESTED_BY: 'user-1',
+    AIP_REQUESTED_BY: PERSON,
+    AIP_REQUESTER: PERSON,
+    AIP_APP_SLUG: 'ai-platform-orchestrator',
     AIP_TRACE_PARENT: '',
     AIP_MAIN_SHA: SHA,
     AIP_CONFIG: join(process.env.RUNNER_TEMP, 'config'),
@@ -92,13 +104,13 @@ describe('commitMessage', () => {
         environment: 'infradev',
         path: PATH,
         operationId: OPERATION,
-        requestedBy: 'user-1',
+        requestedBy: PERSON,
         traceParent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01'
       })
     ).toEqual({
       headline: 'chore(infradev): write alpha',
       body:
-        `Operation-Id: ${OPERATION}\nRequested-By: user-1\n` +
+        `Operation-Id: ${OPERATION}\nRequested-By: ${PERSON}\n` +
         'Traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01'
     })
   })
@@ -110,9 +122,9 @@ describe('commitMessage', () => {
         environment: 'infradev',
         path: PATH,
         operationId: OPERATION,
-        requestedBy: ''
+        requestedBy: 'app:ai-platform-backend'
       }).body
-    ).toBe(`Operation-Id: ${OPERATION}\nRequested-By: unknown`)
+    ).toBe(`Operation-Id: ${OPERATION}\nRequested-By: app:ai-platform-backend`)
   })
 })
 
@@ -124,7 +136,7 @@ describe('prepareSubmit', () => {
     [{ AIP_TRACE_PARENT: 'trace' }, 'invalid trace_parent'],
     [
       { AIP_REQUESTED_BY: 'someone@defra.gov.uk' },
-      'requested_by must be an opaque ID'
+      'requested_by must be entra:{object ID}, github:{user ID} or app:{name}'
     ],
     [
       { AIP_PATH: 'environments/sandbox/alpha.json' },
@@ -164,12 +176,13 @@ describe('prepareSubmit', () => {
     environmentsRepo()
 
     await expect(
-      prepareSubmit(commandInput({ env: submission() }))
+      prepareSubmit(commandInput({ env: submission() }, BY_APP))
     ).resolves.toEqual({ kind: 'tenants', release: 'v0.4.0', sha: INFRA_SHA })
 
     const exported = exportedVariables()
     expect(exported).toMatchObject({
       AIP_KIND: 'tenants',
+      AIP_REQUESTER: PERSON,
       AIP_RELEASE: 'v0.4.0',
       AIP_SHA: INFRA_SHA
     })
@@ -191,10 +204,11 @@ describe('prepareSubmit', () => {
           {
             env: submission({
               AIP_PATH: 'environments/infradev/platform.json',
-              AIP_DOCUMENT: JSON.stringify(pin())
+              AIP_DOCUMENT: JSON.stringify(pin()),
+              AIP_REQUESTED_BY: 'app:ai-platform-orchestrator'
             })
           },
-          { repo: 'ai-platform-deployments' }
+          { repo: 'ai-platform-deployments', ...BY_APP }
         )
       )
     ).resolves.toEqual({ kind: 'pins', release: 'v0.4.0', sha: INFRA_SHA })
@@ -212,10 +226,43 @@ describe('prepareSubmit', () => {
               AIP_DOCUMENT: '{ not json'
             })
           },
-          { repo: 'ai-platform-deployments' }
+          { repo: 'ai-platform-deployments', ...BY_APP }
         )
       )
     ).rejects.toMatchObject({ message: 'document is not JSON' })
+  })
+
+  test('records an engineer who dispatches by their GitHub user ID, whatever requested_by says', async () => {
+    noOperationPullRequest()
+    nock(API)
+      .get(`${DEPLOYMENTS}/contents/environments%2Finfradev%2Fplatform.json`)
+      .query({ ref: 'main' })
+      .reply(200, fileContent(pin()))
+    tagResolves()
+    environmentsRepo()
+    const document = DOCUMENT.replace(PERSON, 'github:583231')
+
+    await prepareSubmit(
+      commandInput({ env: submission({ AIP_DOCUMENT: document }) }, BY_ENGINEER)
+    )
+
+    expect(exportedVariables().AIP_REQUESTER).toBe('github:583231')
+  })
+
+  test.each([
+    [
+      BY_ENGINEER,
+      {},
+      'updatedBy must be github:583231, who requested the change'
+    ],
+    [BY_APP, { AIP_REQUESTED_BY: '' }, 'requested_by is required'],
+    [{}, {}, 'the run has no sender']
+  ])('refuses a change it cannot attribute (%#)', async (run, env, message) => {
+    noOperationPullRequest()
+
+    await expect(
+      prepareSubmit(commandInput({ env: submission(env) }, run))
+    ).rejects.toMatchObject({ outcome: 'checks-failed', message })
   })
 
   test('reports the pull request a retried operation already has', async () => {

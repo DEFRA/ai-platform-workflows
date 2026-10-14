@@ -12,7 +12,9 @@ import {
 const ACTIONS = new Set(['write', 'remove', 'abandon'])
 const OPERATION_ID = /^[a-z0-9][a-z0-9-]{7,63}$/
 const TRACE_PARENT = /^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/
-const REQUESTED_BY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
+// One identity, never a name or an email address (contract: traceability).
+const PRINCIPAL =
+  /^(entra:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|github:[1-9][0-9]{0,19}|app:[a-z][a-z0-9-]{0,38})$/
 const REVISION = /^\d+$/
 // A dispatch input holds at most 65,535 characters.
 const MAX_DOCUMENT_BYTES = 60 * 1024
@@ -63,8 +65,8 @@ function inputProblem(env) {
     return 'invalid trace_parent'
   }
 
-  if (env.AIP_REQUESTED_BY && !REQUESTED_BY.test(env.AIP_REQUESTED_BY)) {
-    return 'requested_by must be an opaque ID'
+  if (env.AIP_REQUESTED_BY && !PRINCIPAL.test(env.AIP_REQUESTED_BY)) {
+    return 'requested_by must be entra:{object ID}, github:{user ID} or app:{name}'
   }
 
   if (action === 'abandon') {
@@ -92,12 +94,38 @@ function inputProblem(env) {
   return null
 }
 
-function documentPin(env) {
+function parsedDocument(env) {
   try {
     return JSON.parse(env.AIP_DOCUMENT)
   } catch {
     throw new OutcomeError('checks-failed', 'document is not JSON')
   }
+}
+
+/**
+ * Who a change is attributed to. The workflow's own App dispatches for the
+ * Portal API and the release, which name the signed-in person or the
+ * automation in requested_by; anyone else who dispatches is recorded by the
+ * GitHub user ID the run was authenticated as, whatever requested_by says.
+ *
+ * @param {object} [sender] - The dispatch event's sender.
+ * @param {object} env - AIP_APP_SLUG and AIP_REQUESTED_BY.
+ * @returns {string} The principal.
+ */
+function requesterOf(sender, env) {
+  if (!sender?.id) {
+    throw new OutcomeError('checks-failed', 'the run has no sender')
+  }
+
+  if (sender.type !== 'Bot' || sender.login !== `${env.AIP_APP_SLUG}[bot]`) {
+    return `github:${sender.id}`
+  }
+
+  if (!env.AIP_REQUESTED_BY) {
+    throw new OutcomeError('checks-failed', 'requested_by is required')
+  }
+
+  return env.AIP_REQUESTED_BY
 }
 
 /**
@@ -117,7 +145,7 @@ function commitMessage({
 }) {
   const trailers = [
     `Operation-Id: ${operationId}`,
-    `Requested-By: ${requestedBy || 'unknown'}`,
+    `Requested-By: ${requestedBy}`,
     ...(traceParent ? [`Traceparent: ${traceParent}`] : [])
   ]
 
@@ -209,14 +237,15 @@ async function reported(core, outcome, pull = null) {
 /**
  * prepare-submit: checks the dispatch inputs, reports an operation that
  * already has a pull request (`existing`, exporting AIP_OUTCOME), and
- * otherwise resolves the release the change is validated at and copies the
- * environment's parameters to AIP_CONFIG. Nothing is written to Git when
- * this fails (`checks-failed`). Exports AIP_KIND, AIP_RELEASE, AIP_SHA and
- * AIP_DOCUMENT_FILE.
+ * otherwise attributes the change (AIP_REQUESTER, which the document's
+ * updatedBy or requestedBy must equal), resolves the release the change is
+ * validated at and copies the environment's parameters to AIP_CONFIG.
+ * Nothing is written to Git when this fails (`checks-failed`). Exports
+ * AIP_KIND, AIP_REQUESTER, AIP_RELEASE, AIP_SHA and AIP_DOCUMENT_FILE.
  *
  * Inputs: AIP_ACTION, AIP_ENVIRONMENT, AIP_PATH, AIP_DOCUMENT,
  * AIP_OPERATION_ID, AIP_EXPECTED_REVISION, AIP_REQUESTED_BY,
- * AIP_TRACE_PARENT, AIP_CONFIG.
+ * AIP_TRACE_PARENT, AIP_APP_SLUG, AIP_CONFIG.
  *
  * @param {object} input - Command context from main.js.
  * @returns {Promise<{kind: string, release?: string, sha?: string}>} Result.
@@ -248,8 +277,20 @@ async function prepareSubmit({ github, app, context, core, env }) {
     return { kind, ...(await reported(core, 'existing', existing)) }
   }
 
+  const requester = requesterOf(context.payload.sender, env)
+  const document = env.AIP_ACTION === 'write' ? parsedDocument(env) : null
+  const attribution = kind === 'pins' ? 'requestedBy' : 'updatedBy'
+
+  if (document && document[attribution] !== requester) {
+    throw new OutcomeError(
+      'checks-failed',
+      `${attribution} must be ${requester}, who requested the change`
+    )
+  }
+
+  core.exportVariable('AIP_REQUESTER', requester)
+
   const environment = environmentName(env.AIP_ENVIRONMENT)
-  const writesPin = kind === 'pins' && env.AIP_ACTION === 'write'
   const { release, sha } = await pinnedRelease({
     github,
     app,
@@ -257,7 +298,7 @@ async function prepareSubmit({ github, app, context, core, env }) {
     kind,
     environment,
     ref: 'main',
-    fallback: writesPin ? documentPin(env) : null
+    fallback: kind === 'pins' ? document : null
   })
 
   if (env.AIP_ACTION === 'write') {
@@ -285,7 +326,7 @@ async function prepareSubmit({ github, app, context, core, env }) {
  * Another operation's open pull request on the same file is `file-locked`.
  *
  * Inputs: AIP_ACTION, AIP_ENVIRONMENT, AIP_PATH, AIP_DOCUMENT,
- * AIP_OPERATION_ID, AIP_REQUESTED_BY, AIP_TRACE_PARENT and AIP_MAIN_SHA, the
+ * AIP_OPERATION_ID, AIP_REQUESTER, AIP_TRACE_PARENT and AIP_MAIN_SHA, the
  * head of main the change was validated against.
  *
  * @param {object} input - Command context from main.js; `github` is the
@@ -322,7 +363,7 @@ async function submit({ github, context, core, env }) {
     environment: env.AIP_ENVIRONMENT,
     path,
     operationId,
-    requestedBy: env.AIP_REQUESTED_BY,
+    requestedBy: env.AIP_REQUESTER,
     traceParent: env.AIP_TRACE_PARENT
   })
 

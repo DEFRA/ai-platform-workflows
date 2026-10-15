@@ -1,0 +1,16 @@
+name: Debug called
+on:
+  workflow_call:
+permissions: {}
+jobs:
+  probe:
+    runs-on: ubuntu-26.04
+    environment:
+      name: release
+      deployment: false
+    permissions:
+      contents: read
+    steps:
+      - run: echo "called len=${#K}"
+        env:
+          K: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}

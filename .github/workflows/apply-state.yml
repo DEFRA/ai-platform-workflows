@@ -1,0 +1,198 @@
+name: Apply state
+
+# Applies one Terraform state, platform (called from ai-platform-deployments)
+# or tenants (from ai-platform-tenants), for each environment that needs it,
+# at the environment's pinned ai-platform-infra release, as
+# id-aip-deploy-{env} through OIDC, with the apply safeguards of design C
+# (R1 to R6, R12). The platform apply then dispatches the tenants apply. No
+# step waits for a person.
+
+on:
+  workflow_call:
+    inputs:
+      state:
+        description: platform or tenants.
+        type: string
+        required: true
+      environment:
+        description: The environment to apply; empty applies every environment whose desired state changed since its last successful apply.
+        type: string
+        required: false
+        default: ''
+      allow_destroy:
+        description: Break-glass, engineers only. Lets plan-guard pass deletes; reported.
+        type: boolean
+        required: false
+        default: false
+      force_unlock:
+        description: Break-glass, engineers only. A state lease ID left by a lost runner (R6).
+        type: string
+        required: false
+        default: ''
+
+permissions: {}
+
+jobs:
+  resolve:
+    name: resolve
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    environment:
+      name: gitops-reader
+      deployment: false
+    permissions:
+      contents: read
+      deployments: read
+    outputs:
+      matrix: ${{ toJSON(fromJSON(steps.resolve.outputs.result).matrix) }}
+    steps:
+      - id: reader
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          repositories: ai-platform-environments,ai-platform-deployments,ai-platform-infra
+          permission-contents: read
+          permission-deployments: read
+
+      - id: resolve
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        with:
+          command: resolve-apply
+          app-token: ${{ steps.reader.outputs.token }}
+        env:
+          AIP_STATE: ${{ inputs.state }}
+          AIP_ENVIRONMENT: ${{ inputs.environment }}
+          AIP_CONFIG: config
+
+      - if: toJSON(fromJSON(steps.resolve.outputs.result).matrix) != '[]'
+        uses: actions/upload-artifact@v7
+        with:
+          name: config
+          path: config
+          retention-days: 7
+
+  apply:
+    name: ${{ matrix.environment }}
+    needs: resolve
+    if: needs.resolve.outputs.matrix != '[]'
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    timeout-minutes: 240
+    environment:
+      name: ${{ matrix.environment }}
+    concurrency:
+      group: ${{ inputs.state }}-${{ matrix.environment }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      deployments: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    env:
+      AIP_STATE: ${{ inputs.state }}
+      AIP_ENVIRONMENT: ${{ matrix.environment }}
+      AIP_RELEASE: ${{ matrix.release }}
+      AIP_ENTRA_ENABLED: ${{ matrix.entra_enabled }}
+      AIP_CONFIG: config
+      AIP_BREAK_GLASS: ${{ github.event_name == 'workflow_dispatch' && !endsWith(github.triggering_actor, '[bot]') }}
+      AIP_ALLOW_DESTROY: ${{ inputs.allow_destroy }}
+      AIP_FORCE_UNLOCK: ${{ inputs.force_unlock }}
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: 'true'
+      ARM_USE_CLI: 'false'
+    steps:
+      - id: preflight
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        with:
+          command: preflight
+
+      - uses: actions/checkout@v7
+        with:
+          path: state
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: config
+          path: config
+
+      - uses: DEFRA/ai-platform-workflows/.github/actions/setup@v1
+        with:
+          sha: ${{ matrix.sha }}
+          terraform: 'true'
+          checks: 'true'
+
+      - name: Plan and guard the plan (R4, R6, R2)
+        id: plan
+        run: bash "$AIP_SCRIPTS/apply.sh" plan
+
+      - name: Apply the saved plan
+        id: apply
+        run: bash "$AIP_SCRIPTS/apply.sh" apply
+
+      # Deleted Entra registrations count towards the deploy identity's
+      # created-object limit for 30 days unless purged (direction 14 October
+      # 2026, 3A). Graph allows it with Application.ReadWrite.OwnedBy.
+      - if: steps.apply.outcome == 'success' && steps.plan.outputs.entra_deletes != '0'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Permanently delete the removed Entra registrations
+        if: steps.apply.outcome == 'success' && steps.plan.outputs.entra_deletes != '0'
+        run: bash "$AIP_SCRIPTS/apply.sh" purge
+
+      - name: Run report (R3, R12)
+        if: always() && env.AIP_SCRIPTS != ''
+        env:
+          AIP_OUTCOME: ${{ steps.apply.outcome == 'success' && 'success' || 'failure' }}
+        run: bash "$AIP_SCRIPTS/apply.sh" report
+
+      - if: always() && hashFiles(format('run-report-{0}.json', matrix.environment)) != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: run-report-${{ matrix.environment }}.json
+          path: run-report-${{ matrix.environment }}.json
+          archive: false
+          retention-days: 90
+
+  tenants:
+    name: dispatch tenants apply
+    needs: [resolve, apply]
+    # The tenants apply follows every platform apply that ran; its own R5
+    # check skips an environment whose platform apply failed.
+    if: >-
+      !cancelled() && inputs.state == 'platform' &&
+      needs.resolve.result == 'success' && needs.resolve.outputs.matrix != '[]' &&
+      needs.apply.result != 'skipped'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    environment:
+      name: gitops-dispatch
+      deployment: false
+    permissions: {}
+    steps:
+      - id: dispatcher
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          repositories: ai-platform-tenants
+          permission-actions: write
+
+      - uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        with:
+          command: dispatch-apply
+          token: ${{ steps.dispatcher.outputs.token }}
+        env:
+          AIP_TARGET: tenants
+          AIP_ENVIRONMENTS: ${{ toJSON(fromJSON(needs.resolve.outputs.matrix).*.environment) }}
+          AIP_REASON: platform apply run ${{ github.run_id }}

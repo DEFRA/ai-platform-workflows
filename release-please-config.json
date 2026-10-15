@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.11.2/schemas/config.json",
+  "release-type": "simple",
+  "include-v-in-tag": true,
+  "include-component-in-tag": false,
+  "bump-minor-pre-major": false,
+  "packages": {
+    ".": {
+      "initial-version": "1.0.0",
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}

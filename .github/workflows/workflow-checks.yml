@@ -1,0 +1,55 @@
+name: Workflow checks
+
+# Required checks on ai-platform-workflows pull requests:
+# `workflow-checks / actionlint` (with shellcheck of the scripts) and
+# `workflow-checks / tests`.
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The author's own image (rhysd/actionlint usage docs), pinned like the
+      # version .github/actionlint.yaml is written for; it bundles shellcheck
+      # for run: blocks.
+      - uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+
+      - run: shellcheck scripts/*.sh
+
+  tests:
+    name: tests
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - run: npm run lint
+
+      - run: npm test
+
+      - run: npm audit --audit-level=moderate

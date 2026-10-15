@@ -1,0 +1,141 @@
+name: Submit desired state
+
+# Dispatched through each state repository's submit.yml by the Portal API,
+# and by the ai-platform-infra release for autoPin pins. Validates the whole
+# file at the environment's pinned release against main with the change
+# staged, then commits it as the GitHub App on op/{operation_id}, opens the
+# pull request and enables squash auto-merge. Nothing is written to Git when
+# validation fails. Every run's job summary heads with its outcome code.
+# Contract: ai-platform-infra docs/gitops-contract.md.
+
+on:
+  workflow_call:
+    inputs:
+      action:
+        description: write, remove or abandon.
+        type: string
+        required: true
+      environment:
+        type: string
+        required: true
+      path:
+        type: string
+        required: false
+        default: ''
+      document:
+        description: The whole canonical document, for write.
+        type: string
+        required: false
+        default: ''
+      operation_id:
+        type: string
+        required: true
+      expected_revision:
+        description: Team files only; the revision the caller last read, 0 for a new file.
+        type: string
+        required: false
+        default: '0'
+      requested_by:
+        description: >-
+          entra:{object ID} of the person the Portal API signed in, or app:{name}
+          for automation. Honoured only when the workflow's own App dispatches;
+          anyone else is recorded as github:{user ID}.
+        type: string
+        required: false
+        default: ''
+      trace_parent:
+        type: string
+        required: false
+        default: ''
+
+permissions: {}
+
+jobs:
+  submit:
+    name: submit
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    environment:
+      name: gitops-writer
+      deployment: false
+    # One submit per file at a time; every queued submit waits its turn
+    # (queue: max) rather than replacing the one already waiting.
+    concurrency:
+      group: submit-${{ inputs.path || inputs.operation_id }}
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      AIP_ACTION: ${{ inputs.action }}
+      AIP_ENVIRONMENT: ${{ inputs.environment }}
+      AIP_PATH: ${{ inputs.path }}
+      AIP_DOCUMENT: ${{ inputs.document }}
+      AIP_OPERATION_ID: ${{ inputs.operation_id }}
+      AIP_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+      AIP_REQUESTED_BY: ${{ inputs.requested_by }}
+      AIP_TRACE_PARENT: ${{ inputs.trace_parent }}
+      AIP_CONFIG: config
+    steps:
+      - id: reader
+        if: inputs.action != 'abandon'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          repositories: ai-platform-environments,ai-platform-deployments,ai-platform-infra
+          permission-contents: read
+
+      - name: Check the inputs and resolve the pinned release
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        with:
+          command: prepare-submit
+          app-token: ${{ steps.reader.outputs.token }}
+        env:
+          AIP_APP_SLUG: ${{ steps.reader.outputs.app-slug }}
+
+      - id: writer
+        if: env.AIP_OUTCOME != 'existing' || env.AIP_REPAIR == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Abandon
+        if: inputs.action == 'abandon'
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        with:
+          command: abandon
+          token: ${{ steps.writer.outputs.token }}
+
+      - if: inputs.action != 'abandon' && env.AIP_OUTCOME != 'existing'
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          path: state
+          persist-credentials: false
+
+      - if: inputs.action != 'abandon' && env.AIP_OUTCOME != 'existing'
+        uses: DEFRA/ai-platform-workflows/.github/actions/setup@v1
+        with:
+          sha: ${{ env.AIP_SHA }}
+          checks: 'true'
+
+      - name: Stage and validate the change
+        if: inputs.action != 'abandon' && env.AIP_OUTCOME != 'existing'
+        env:
+          AIP_AUTHOR: ${{ steps.writer.outputs.app-slug }}[bot]
+        run: bash "$AIP_SCRIPTS/desired-state.sh" stage
+
+      - name: Commit and raise the pull request, or complete an existing one
+        if: >-
+          inputs.action != 'abandon' &&
+          (env.AIP_OUTCOME != 'existing' || env.AIP_REPAIR == 'true')
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        with:
+          command: submit
+          token: ${{ steps.writer.outputs.token }}

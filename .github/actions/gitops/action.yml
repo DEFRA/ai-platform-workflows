@@ -1,0 +1,43 @@
+name: GitOps
+description: >
+  Runs one GitOps command from src/ with the authenticated Octokit that
+  actions/github-script injects, pinned to REST API version 2026-03-10 and
+  retried on transient errors. Parameters are AIP_* variables of the job or
+  the step; the commands are listed in src/main.js.
+
+inputs:
+  command:
+    description: The command, for example resolve-apply or submit.
+    required: true
+  token:
+    description: Token for this repository.
+    required: false
+    default: ${{ github.token }}
+  app-token:
+    description: An App installation token for the other GitOps repositories, when the command needs one.
+    required: false
+    default: ''
+
+outputs:
+  result:
+    description: The command's result as JSON.
+    value: ${{ steps.run.outputs.result }}
+  outcome:
+    description: The outcome code, for commands that have one.
+    value: ${{ steps.run.outputs.outcome }}
+
+runs:
+  using: composite
+  steps:
+    - id: run
+      uses: actions/github-script@v9
+      env:
+        GITOPS_COMMAND: ${{ inputs.command }}
+        GITOPS_APP_TOKEN: ${{ inputs.app-token }}
+        GITOPS_MAIN: ${{ github.action_path }}/../../../src/main.js
+      with:
+        github-token: ${{ inputs.token }}
+        retries: 3
+        script: |
+          const { run } = await import(process.env.GITOPS_MAIN)
+          return run({ github, context, core, getOctokit })

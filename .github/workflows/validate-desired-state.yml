@@ -1,0 +1,55 @@
+name: Validate desired state
+
+# The required check `validate-desired-state / validate` on every pull
+# request in ai-platform-tenants and ai-platform-deployments: one stable name,
+# because a pull request changes the files of exactly one environment.
+# Offline in Phase 1 (D7): the checks run from ai-platform-infra at that
+# environment's pinned release, with no Azure sign-in.
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    environment:
+      name: gitops-reader
+      deployment: false
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      AIP_CONFIG: config
+    steps:
+      - id: reader
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          repositories: ai-platform-environments,ai-platform-deployments,ai-platform-infra
+          permission-contents: read
+
+      - name: Find the environment and its pinned release
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        with:
+          command: prepare-validation
+          app-token: ${{ steps.reader.outputs.token }}
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: state
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: DEFRA/ai-platform-workflows/.github/actions/setup@v1
+        with:
+          sha: ${{ env.AIP_SHA }}
+          checks: 'true'
+
+      - name: Validate
+        run: bash "$AIP_SCRIPTS/desired-state.sh" validate

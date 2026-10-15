@@ -1,0 +1,65 @@
+name: Set up ai-platform-infra
+description: >
+  Checks out ai-platform-infra at a commit (or uses the checkout already at
+  path), fails fast when that commit needs a newer ai-platform-workflows
+  (compat.json), and installs what the job asks for: Terraform at
+  .terraform-version with a provider cache, and the aip-checks CLI. Exports
+  AIP_INFRA, AIP_SCRIPTS and AIP_CHECKS for later steps.
+
+inputs:
+  sha:
+    description: Commit of ai-platform-infra to check out; empty uses the checkout at path.
+    required: false
+    default: ''
+  path:
+    description: Where ai-platform-infra is, relative to the workspace.
+    required: false
+    default: infra
+  terraform:
+    description: Install Terraform.
+    required: false
+    default: 'false'
+  checks:
+    description: Install the aip-checks CLI's dependencies.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - if: inputs.sha != ''
+      uses: actions/checkout@v7
+      with:
+        repository: ${{ github.repository_owner }}/ai-platform-infra
+        ref: ${{ inputs.sha }}
+        path: ${{ inputs.path }}
+        persist-credentials: false
+
+    - id: setup
+      shell: bash
+      env:
+        AIP_INFRA: ${{ inputs.path }}
+      run: bash "$GITHUB_ACTION_PATH/../../../scripts/setup.sh"
+
+    - if: inputs.terraform == 'true'
+      uses: hashicorp/setup-terraform@v4
+      with:
+        terraform_version: ${{ steps.setup.outputs.terraform-version }}
+        terraform_wrapper: false
+
+    - if: inputs.terraform == 'true'
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/terraform-plugins
+        key: terraform-${{ runner.os }}-${{ steps.setup.outputs.terraform-version }}-${{ hashFiles(format('{0}/**/.terraform.lock.hcl', inputs.path)) }}
+
+    - if: inputs.checks == 'true'
+      uses: actions/setup-node@v7
+      with:
+        node-version-file: ${{ inputs.path }}/checks/.nvmrc
+        cache: npm
+        cache-dependency-path: ${{ inputs.path }}/checks/package-lock.json
+
+    - if: inputs.checks == 'true'
+      shell: bash
+      run: npm ci --prefix "$AIP_INFRA/checks" --ignore-scripts --no-audit --no-fund --omit=dev

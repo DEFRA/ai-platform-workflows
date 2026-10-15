@@ -1,0 +1,30 @@
+name: Prune operation branches
+
+# Nightly in ai-platform-tenants and ai-platform-deployments: deletes op/*
+# branches whose last commit is older than `days` and that have no open pull
+# request (R7).
+
+on:
+  workflow_call:
+    inputs:
+      days:
+        type: number
+        required: false
+        default: 7
+
+permissions: {}
+
+jobs:
+  prune:
+    name: prune
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        with:
+          command: prune
+        env:
+          AIP_DAYS: ${{ inputs.days }}

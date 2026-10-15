@@ -7,6 +7,10 @@ name: Release merge
 
 on:
   workflow_call:
+    secrets:
+      GITOPS_APP_PRIVATE_KEY:
+        description: Private key of the ai-platform-orchestrator GitHub App.
+        required: true
 
 permissions: {}
 
@@ -18,9 +22,6 @@ jobs:
       github.event.workflow_run.head_branch == 'release-please--branches--main'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
-    environment:
-      name: release
-      deployment: false
     permissions: {}
     steps:
       - id: merger

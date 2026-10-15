@@ -9,6 +9,10 @@ name: Validate environments
 
 on:
   workflow_call:
+    secrets:
+      GITOPS_APP_PRIVATE_KEY:
+        description: Private key of the ai-platform-orchestrator GitHub App.
+        required: true
 
 permissions: {}
 
@@ -45,9 +49,6 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
-    environment:
-      name: gitops-dispatch
-      deployment: false
     permissions:
       contents: read
     steps:

@@ -7,6 +7,10 @@ name: Release
 
 on:
   workflow_call:
+    secrets:
+      GITOPS_APP_PRIVATE_KEY:
+        description: Private key of the ai-platform-orchestrator GitHub App.
+        required: true
     inputs:
       kind:
         description: infra or workflows.
@@ -20,9 +24,6 @@ jobs:
     name: release
     runs-on: ubuntu-26.04
     timeout-minutes: 15
-    environment:
-      name: release
-      deployment: false
     permissions:
       contents: read
     steps:

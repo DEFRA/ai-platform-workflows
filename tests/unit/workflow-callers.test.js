@@ -43,3 +43,31 @@ describe('callers of workflows that mint an App token', () => {
     expect(job).toContain('secrets: inherit')
   })
 })
+
+describe('reusable workflows', () => {
+  const reusable = readdirSync(WORKFLOWS).filter((file) =>
+    read(file).includes('  workflow_call:')
+  )
+
+  test.each(reusable.filter((file) => read(file).includes(KEY)))(
+    '%s declares the App key as a required secret',
+    (file) => {
+      expect(read(file)).toMatch(
+        /^ {4}secrets:\n {6}GITOPS_APP_PRIVATE_KEY:\n(?: {8}.+\n)* {8}required: true$/m
+      )
+    }
+  )
+
+  test.each(reusable)(
+    '%s uses only a real environment as a GitHub Environment',
+    (file) => {
+      const names = [
+        ...read(file).matchAll(/^ {4}environment:\n {6}name: (.+)$/gm)
+      ]
+
+      expect(names.map(([, name]) => name)).toSatisfy((all) =>
+        all.every((name) => name.startsWith('${{'))
+      )
+    }
+  )
+})

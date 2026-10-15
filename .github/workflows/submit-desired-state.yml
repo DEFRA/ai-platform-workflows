@@ -10,6 +10,10 @@ name: Submit desired state
 
 on:
   workflow_call:
+    secrets:
+      GITOPS_APP_PRIVATE_KEY:
+        description: Private key of the ai-platform-orchestrator GitHub App.
+        required: true
     inputs:
       action:
         description: write, remove or abandon.
@@ -55,9 +59,6 @@ jobs:
     name: submit
     runs-on: ubuntu-26.04
     timeout-minutes: 15
-    environment:
-      name: gitops-writer
-      deployment: false
     # One submit per file at a time; every queued submit waits its turn
     # (queue: max) rather than replacing the one already waiting.
     concurrency:

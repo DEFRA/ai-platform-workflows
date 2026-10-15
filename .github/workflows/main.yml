@@ -13,6 +13,7 @@ concurrency:
 jobs:
   release:
     uses: ./.github/workflows/release.yml
+    secrets: inherit
     permissions:
       contents: read
     with:

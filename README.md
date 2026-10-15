@@ -50,7 +50,8 @@ repositories it needs (`actions/create-github-app-token`).
 Callers and composite actions are referenced by major tag, `DEFRA/ai-platform-workflows/...@v1`; every other
 action by its major tag too (`actions/checkout@v7`). Dependabot proposes new majors after a seven-day
 cooldown. Workflow inputs are the only interface; repository names follow the convention
-`{owner}/ai-platform-{name}`.
+`{owner}/ai-platform-{name}`. A caller of a workflow that mints an App token must set `secrets: inherit`: a
+reusable workflow receives no secrets otherwise, not even those of its own Environment.
 
 | Where                         | Variables and secrets                                                                          | Branches |
 | ----------------------------- | ---------------------------------------------------------------------------------------------- | -------- |

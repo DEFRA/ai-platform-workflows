@@ -10,3 +10,4 @@ permissions: {}
 jobs:
   release-merge:
     uses: ./.github/workflows/release-merge.yml
+    secrets: inherit

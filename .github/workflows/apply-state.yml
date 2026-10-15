@@ -97,6 +97,7 @@ jobs:
       AIP_ENVIRONMENT: ${{ matrix.environment }}
       AIP_RELEASE: ${{ matrix.release }}
       AIP_ENTRA_ENABLED: ${{ matrix.entra_enabled }}
+      AIP_TEAM_REGISTRATIONS: ${{ matrix.team_registrations }}
       AIP_CONFIG: config
       AIP_BREAK_GLASS: ${{ github.event_name == 'workflow_dispatch' && !endsWith(github.triggering_actor, '[bot]') }}
       AIP_ALLOW_DESTROY: ${{ inputs.allow_destroy }}

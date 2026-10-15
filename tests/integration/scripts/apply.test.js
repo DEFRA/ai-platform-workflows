@@ -64,6 +64,7 @@ function run(command, env = {}) {
     AIP_ENVIRONMENT: 'infradev',
     AIP_RELEASE: 'v0.4.0',
     AIP_ENTRA_ENABLED: 'true',
+    AIP_TEAM_REGISTRATIONS: 'true',
     AIP_INFRA: workspace.path('infra'),
     AIP_CONFIG: 'config',
     AIP_BASE: '',
@@ -154,7 +155,7 @@ describe('apply.sh plan', () => {
         line.includes('/tenants plan')
       )
     ).toContain(
-      `-var environment=infradev -var cdp=${JSON.stringify(CDP)} ` +
+      `-var team_registrations=true -var environment=infradev -var cdp=${JSON.stringify(CDP)} ` +
         '-var platform_state={"container_name":"tfstate",' +
         '"resource_group_name":"SNDAIPINFRGP1402","storage_account_name":"sndaipinfsto1401",' +
         '"key":"platform.tfstate"}'
@@ -163,6 +164,21 @@ describe('apply.sh plan', () => {
       `checks plan-guard --plan plan.json --state tenants --repo state --head ${HEAD} --environment infradev --base b1`
     ])
     expect(workspace.outputs()).toEqual({ entra_deletes: '0' })
+  })
+
+  test('passes only team_registrations to the tenants plan, never entra_enabled', () => {
+    const result = run('plan', {
+      AIP_STATE: 'tenants',
+      AIP_BASE: 'b1',
+      AIP_TEAM_REGISTRATIONS: 'false'
+    })
+    const plan = command('terraform -chdir=').find((line) =>
+      line.includes('/tenants plan')
+    )
+
+    expect(result.status).toBe(0)
+    expect(plan).toContain('-var team_registrations=false')
+    expect(plan).not.toContain('entra_enabled')
   })
 
   test('counts the Entra objects the plan deletes, for the purge', () => {

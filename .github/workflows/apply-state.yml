@@ -9,6 +9,10 @@ name: Apply state
 
 on:
   workflow_call:
+    secrets:
+      GITOPS_APP_PRIVATE_KEY:
+        description: Private key of the ai-platform-orchestrator GitHub App.
+        required: true
     inputs:
       state:
         description: platform or tenants.
@@ -37,9 +41,6 @@ jobs:
     name: resolve
     runs-on: ubuntu-26.04
     timeout-minutes: 10
-    environment:
-      name: gitops-reader
-      deployment: false
     permissions:
       contents: read
       deployments: read
@@ -175,9 +176,6 @@ jobs:
       needs.apply.result != 'skipped'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
-    environment:
-      name: gitops-dispatch
-      deployment: false
     permissions: {}
     steps:
       - id: dispatcher

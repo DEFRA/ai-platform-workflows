@@ -50,21 +50,18 @@ repositories it needs (`actions/create-github-app-token`).
 Callers and composite actions are referenced by major tag, `DEFRA/ai-platform-workflows/...@v1`; every other
 action by its major tag too (`actions/checkout@v7`). Dependabot proposes new majors after a seven-day
 cooldown. Workflow inputs are the only interface; repository names follow the convention
-`{owner}/ai-platform-{name}`. A caller of a workflow that mints an App token must set `secrets: inherit`: a
-reusable workflow receives no secrets otherwise, not even those of its own Environment.
+`{owner}/ai-platform-{name}`. A caller must set `secrets: inherit`: a reusable workflow receives no secrets
+otherwise, and each workflow declares `GITOPS_APP_PRIVATE_KEY` as a required secret.
 
-| Where                         | Variables and secrets                                                                          | Branches |
-| ----------------------------- | ---------------------------------------------------------------------------------------------- | -------- |
-| Repository variables          | `GITOPS_APP_CLIENT_ID` and `AZURE_TENANT_ID`, shared by every environment                      | –        |
-| Environment `{env}`           | `AZURE_CLIENT_ID`, `AZURE_SUBSCRIPTION_ID` of `id-aip-deploy-{env}`; tenants and deployments   | `main`   |
-| Environment `gitops-writer`   | Secret `GITOPS_APP_PRIVATE_KEY`; submit, in tenants and deployments                            | `main`   |
-| Environment `gitops-reader`   | The same secret; read-only tokens for pull request checks and apply resolution                 | All      |
-| Environment `gitops-dispatch` | The same secret; `actions: write` tokens to dispatch an apply, in deployments and environments | `main`   |
-| Environment `release`         | The same secret; release-please and the release merge, in infra and this repository            | `main`   |
+| Where                | Variables and secrets                                                                        | Branches |
+| -------------------- | -------------------------------------------------------------------------------------------- | -------- |
+| Secret               | `GITOPS_APP_PRIVATE_KEY`, the App key, one per repository or an organisation secret          | –        |
+| Repository variables | `GITOPS_APP_CLIENT_ID` and `AZURE_TENANT_ID`, shared by every environment                    | –        |
+| Environment `{env}`  | `AZURE_CLIENT_ID`, `AZURE_SUBSCRIPTION_ID` of `id-aip-deploy-{env}`; tenants and deployments | `main`   |
 
-An Environment variable wins over a repository variable of the same name. Only the apply jobs create GitHub
-Deployments; the others use `deployment: false`. In Phase 1 every Environment holds the one App,
-`ai-platform-orchestrator`.
+Only real environments (`infradev`, `dev`, `test`, `preprod`, `prod`) are GitHub Environments, and only the
+apply jobs use them, so Azure issues a token only to a job on `main` in the matching Environment. An Environment
+variable wins over a repository variable of the same name. In Phase 1 the one App is `ai-platform-orchestrator`.
 
 Runners: each registry entry's `runner` decides where its apply jobs run, as standard labels
 (`["ubuntu-26.04"]`, Phase 1) or a larger-runner group with Azure private networking (`{"group": "aip-{env}"}`,

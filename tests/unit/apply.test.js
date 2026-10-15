@@ -101,6 +101,7 @@ const INFRADEV_LEG = {
   environment: 'infradev',
   runner: '["ubuntu-26.04"]',
   entra_enabled: true,
+  team_registrations: true,
   release: 'v0.4.0',
   sha: INFRA_SHA
 }
@@ -216,6 +217,37 @@ describe('resolveApply', () => {
   })
 
   describe('after a dispatch', () => {
+    test('skips team registrations when the entry turns them off', async () => {
+      const { entra } = registryEntry()
+
+      headOfMain(DEPLOYMENTS)
+      environmentsRepo([
+        registryEntry({ entra: { ...entra, teamRegistrations: false } })
+      ])
+      pinOnMain(DEPLOYMENTS, SHA)
+
+      await expect(
+        resolveApply(input({ AIP_ENVIRONMENT: 'infradev' }))
+      ).resolves.toEqual({
+        matrix: [{ ...INFRADEV_LEG, team_registrations: false }]
+      })
+    })
+
+    test('creates no team registrations where Entra is off', async () => {
+      const { entra } = registryEntry()
+
+      headOfMain(DEPLOYMENTS)
+      environmentsRepo([registryEntry({ entra: { ...entra, enabled: false } })])
+      pinOnMain(DEPLOYMENTS, SHA)
+
+      await expect(
+        resolveApply(input({ AIP_ENVIRONMENT: 'infradev' }))
+      ).resolves.toEqual({
+        matrix: [
+          { ...INFRADEV_LEG, entra_enabled: false, team_registrations: false }
+        ]
+      })
+    })
     test('applies the environment it names whatever changed', async () => {
       headOfMain(DEPLOYMENTS)
       environmentsRepo()

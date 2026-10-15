@@ -125,6 +125,8 @@ async function legFor({ github, app, context, core, state, entry, forced }) {
     environment: name,
     runner: runnerFor(entry),
     entra_enabled: entry.entra.enabled,
+    team_registrations:
+      entry.entra.enabled && entry.entra.teamRegistrations !== false,
     release: pin.release,
     sha: pin.sha
   }

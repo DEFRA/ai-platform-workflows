@@ -11,7 +11,8 @@
 #
 # Runs in the workspace that holds state/ (this repository), config/ (from
 # ai-platform-environments) and the setup action's ai-platform-infra.
-# In: AIP_STATE, AIP_ENVIRONMENT, AIP_RELEASE, AIP_ENTRA_ENABLED, AIP_BASE,
+# In: AIP_STATE, AIP_ENVIRONMENT, AIP_RELEASE, AIP_ENTRA_ENABLED (platform),
+#     AIP_TEAM_REGISTRATIONS (tenants), AIP_BASE,
 #     AIP_INFRA, AIP_CHECKS, AIP_CONFIG, AIP_OUTCOME (report), the break-glass
 #     AIP_BREAK_GLASS, AIP_ALLOW_DESTROY and AIP_FORCE_UNLOCK, and ARM_*.
 # Out: entra_deletes in GITHUB_OUTPUT (plan), how many Entra objects the plan
@@ -94,9 +95,9 @@ plan() {
     terraform -chdir="$root" force-unlock -force "$AIP_FORCE_UNLOCK"
   fi
 
-  local vars=(-var "release=${AIP_RELEASE:?}" -var "entra_enabled=${AIP_ENTRA_ENABLED:?}")
+  local vars=(-var "release=${AIP_RELEASE:?}")
   if [[ "$state" == "platform" ]]; then
-    vars+=(-var-file="$params_file")
+    vars+=(-var "entra_enabled=${AIP_ENTRA_ENABLED:?}" -var-file="$params_file")
   else
     # Every CDP federation takes its issuer, account and audience from here.
     local cdp
@@ -104,7 +105,8 @@ plan() {
       '.environments[] | select(.name == $name) | .cdp // empty | {issuer, awsAccount, audience}' \
       "$config/registry.json")"
     [[ -n "$cdp" ]] || fail "registry.json has no cdp trust for $environment"
-    vars+=(-var "environment=$environment" -var "cdp=$cdp"
+    vars+=(-var "team_registrations=${AIP_TEAM_REGISTRATIONS:?}"
+      -var "environment=$environment" -var "cdp=$cdp"
       -var "platform_state=$(jq -c '. + {key: "platform.tfstate"}' <<< "$location")")
   fi
   terraform -chdir="$root" plan -input=false -lock-timeout=15m -out=tfplan "${vars[@]}"

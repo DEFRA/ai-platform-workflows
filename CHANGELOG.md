@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/DEFRA/ai-platform-workflows/compare/v1.0.0...v1.1.0) (2026-10-15)
+
+
+### Features
+
+* pass team_registrations to the tenants apply ([#8](https://github.com/DEFRA/ai-platform-workflows/issues/8)) ([19ad7b5](https://github.com/DEFRA/ai-platform-workflows/commit/19ad7b56042fd964cf7afb77b4ec3041ef41ae70))
+
 ## 1.0.0 (2026-10-15)
 
 

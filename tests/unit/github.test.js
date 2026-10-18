@@ -336,6 +336,42 @@ describe('dispatchWorkflow', () => {
       'https://github.com/DEFRA/ai-platform-tenants/actions/runs/77'
     )
   })
+
+  test('names a disabled target workflow as the outcome, and never re-enables it', async () => {
+    nock(API)
+      .post(`${TENANTS}/actions/workflows/apply.yml/dispatches`)
+      .reply(422, {
+        message: "Cannot trigger a 'workflow_dispatch' on a disabled workflow",
+        documentation_url:
+          'https://docs.github.com/rest/actions/workflows#create-a-workflow-dispatch-event'
+      })
+
+    await expect(
+      dispatchWorkflow(createOctokit(), {
+        ...REPO,
+        workflow: 'apply.yml',
+        inputs: {}
+      })
+    ).rejects.toMatchObject({
+      outcome: 'workflow-disabled',
+      message: `${OWNER}/ai-platform-tenants apply.yml is disabled; enable it in that repository's Actions tab, then dispatch again`
+    })
+    expect(nock.pendingMocks()).toEqual([])
+  })
+
+  test('surfaces any other dispatch failure as it is', async () => {
+    nock(API)
+      .post(`${TENANTS}/actions/workflows/apply.yml/dispatches`)
+      .reply(422, { message: 'Required input environment not provided' })
+
+    await expect(
+      dispatchWorkflow(createOctokit(), {
+        ...REPO,
+        workflow: 'apply.yml',
+        inputs: {}
+      })
+    ).rejects.toMatchObject({ status: 422, name: 'HttpError' })
+  })
 })
 
 describe('writeEnvironmentsConfig', () => {

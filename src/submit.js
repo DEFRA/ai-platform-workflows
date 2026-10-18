@@ -19,6 +19,13 @@ const REVISION = /^\d+$/
 // A dispatch input holds at most 65,535 characters.
 const MAX_DOCUMENT_BYTES = 60 * 1024
 const DAY_MS = 24 * 60 * 60 * 1000
+// The one check a state repository requires on main (design B); the caller
+// job must be named validate-desired-state for the context to match.
+const VALIDATE_CHECK = 'validate-desired-state / validate'
+// GitHub refuses to arm auto-merge on a pull request nothing blocks.
+const MERGEABLE_NOW = /is in (clean|unstable|has_hooks) status/i
+const DEFAULT_MERGE_WAIT_SECONDS = 600
+const MERGE_POLL_MS = 15_000
 
 const CREATE_COMMIT = `
   mutation ($input: CreateCommitOnBranchInput!) {
@@ -227,30 +234,122 @@ function trailersOf(body) {
   return (body ?? '').split('\n\n').slice(1).join('\n\n').trim()
 }
 
-// Labels the pull request and enables squash auto-merge with the trailers in
+function mergeableNow(error) {
+  return (error.errors ?? []).some(
+    (item) => item.type === 'UNPROCESSABLE' && MERGEABLE_NOW.test(item.message)
+  )
+}
+
+// Real time; tests inject their own.
+const TIMERS = {
+  now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// The newest run of the validate check on a commit, or null before it starts.
+async function validateCheck(github, { owner, repo }, sha) {
+  const { data } = await github.rest.checks.listForRef({
+    owner,
+    repo,
+    ref: sha,
+    check_name: VALIDATE_CHECK,
+    per_page: 10
+  })
+
+  return data.check_runs.reduce(
+    (newest, check) => (!newest || check.id > newest.id ? check : newest),
+    null
+  )
+}
+
+// Nothing on main blocks the pull request, so auto-merge has nothing to wait
+// for and GitHub refuses to arm it. The change still merges only once the
+// validate check has passed on its head: the step waits for that check and
+// merges itself, so no person is needed and nothing unvalidated reaches main.
+// Past the wait the pull request is left open, reported, for auto-merge or
+// an engineer.
+async function mergeWhenValidated(github, repo, pull, { core, env, timers }) {
+  const { owner, repo: name } = repo
+  const seconds = Number(
+    env.AIP_MERGE_WAIT_SECONDS ?? DEFAULT_MERGE_WAIT_SECONDS
+  )
+  const deadline = timers.now() + seconds * 1000
+
+  for (;;) {
+    const check = await validateCheck(github, repo, pull.head.sha)
+
+    if (check?.status === 'completed') {
+      if (check.conclusion !== 'success') {
+        throw new OutcomeError(
+          'checks-failed',
+          `${VALIDATE_CHECK} concluded ${check.conclusion} on ${pull.html_url}`
+        )
+      }
+
+      await github.rest.pulls.merge({
+        owner,
+        repo: name,
+        pull_number: pull.number,
+        merge_method: 'squash',
+        commit_title: `${pull.title} (#${pull.number})`,
+        commit_message: trailersOf(pull.body),
+        sha: pull.head.sha
+      })
+
+      return 'merged'
+    }
+
+    if (timers.now() >= deadline) {
+      core.warning(
+        `${VALIDATE_CHECK} had not completed on ${pull.html_url} after ` +
+          `${seconds}s; the pull request stays open for auto-merge or an engineer`
+      )
+      return 'open'
+    }
+
+    await timers.sleep(MERGE_POLL_MS)
+  }
+}
+
+// Labels the pull request and arms squash auto-merge with the trailers in
 // the squash body, skipping whatever is already in place, so a retry
-// completes a pull request an earlier attempt left part-done.
-async function completePullRequest(github, { owner, repo }, pull, environment) {
+// completes a pull request an earlier attempt left part-done. Returns how
+// the pull request will merge: `auto-merge`, `merged` (by this step, once
+// validated) or `open`.
+async function completePullRequest(github, repo, pull, input) {
+  const { owner, repo: name } = repo
+  const environment = input.env.AIP_ENVIRONMENT
   const labels = ['gitops', `env:${environment}`].filter(
-    (name) => !(pull.labels ?? []).some((label) => label.name === name)
+    (label) => !(pull.labels ?? []).some((has) => has.name === label)
   )
 
   if (labels.length > 0) {
     await github.rest.issues.addLabels({
       owner,
-      repo,
+      repo: name,
       issue_number: pull.number,
       labels
     })
   }
 
-  if (!pull.auto_merge) {
+  if (pull.auto_merge) {
+    return 'auto-merge'
+  }
+
+  try {
     await github.graphql(ENABLE_AUTO_MERGE, {
       id: pull.node_id,
       headline: `${pull.title} (#${pull.number})`,
       body: trailersOf(pull.body)
     })
+    return 'auto-merge'
+  } catch (error) {
+    if (!mergeableNow(error)) {
+      throw error
+    }
   }
+
+  return mergeWhenValidated(github, repo, pull, input)
 }
 
 async function reported(core, outcome, pull = null) {
@@ -357,36 +456,37 @@ async function prepareSubmit({ github, app, context, core, env }) {
 /**
  * submit: writes or removes the validated file on op/{operation} as the App
  * with createCommitOnBranch, opens the pull request, labels it and enables
- * squash auto-merge with the trailers in the squash body. Idempotent per
+ * squash auto-merge with the trailers in the squash body. When nothing on
+ * main blocks the pull request, so auto-merge cannot be armed, the step
+ * waits for the validate check and merges itself (`merged`). Idempotent per
  * operation: an operation that has a pull request reports it (`existing`),
- * first completing the labels and auto-merge of one still open.
+ * first completing the labels and merge of one still open.
  * Another operation's open pull request on the same file is `file-locked`.
  *
  * Inputs: AIP_ACTION, AIP_ENVIRONMENT, AIP_PATH, AIP_DOCUMENT,
  * AIP_OPERATION_ID, AIP_REQUESTER, AIP_TRACE_PARENT and AIP_MAIN_SHA, the
- * head of main the change was validated against.
+ * head of main the change was validated against; optional
+ * AIP_MERGE_WAIT_SECONDS.
  *
  * @param {object} input - Command context from main.js; `github` is the
- *   writer token.
+ *   writer token; `timers` (now, sleep) defaults to real time.
  * @returns {Promise<{outcome: string, number?: number, url?: string}>}
  */
-async function submit({ github, context, core, env }) {
+async function submit(input) {
+  const { github, context, core, env } = input
   const { owner, repo } = context.repo
   const operationId = env.AIP_OPERATION_ID
   const path = env.AIP_PATH
   const existing = await operationPullRequest(github, context.repo, operationId)
+  const completion = { core, env, timers: input.timers ?? TIMERS }
 
   if (existing) {
-    if (existing.state === 'open') {
-      await completePullRequest(
-        github,
-        context.repo,
-        existing,
-        env.AIP_ENVIRONMENT
-      )
-    }
+    const merge =
+      existing.state === 'open'
+        ? await completePullRequest(github, context.repo, existing, completion)
+        : 'closed'
 
-    return reported(core, 'existing', existing)
+    return reported(core, merge === 'merged' ? 'merged' : 'existing', existing)
   }
 
   const locking = await lockingPullRequest(
@@ -448,9 +548,14 @@ async function submit({ github, context, core, env }) {
     maintainer_can_modify: false
   })
 
-  await completePullRequest(github, context.repo, pull, env.AIP_ENVIRONMENT)
+  const merge = await completePullRequest(
+    github,
+    context.repo,
+    pull,
+    completion
+  )
 
-  return reported(core, 'pr-raised', pull)
+  return reported(core, merge === 'merged' ? 'merged' : 'pr-raised', pull)
 }
 
 /**
@@ -561,4 +666,4 @@ async function prune({ github, context, core, env }) {
   return { deleted }
 }
 
-export { abandon, commitMessage, prepareSubmit, prune, submit }
+export { abandon, commitMessage, prepareSubmit, prune, submit, VALIDATE_CHECK }

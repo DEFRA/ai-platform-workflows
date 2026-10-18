@@ -535,11 +535,15 @@ describe('submit', () => {
         })
     }
 
+    // The runs GitHub Actions published, unless a run names another App.
     function checkRuns(runs) {
       return nock(API)
         .get(`${TENANTS}/commits/${HEAD}/check-runs`)
-        .query({ check_name: VALIDATE_CHECK, per_page: '10' })
-        .reply(200, { total_count: runs.length, check_runs: runs })
+        .query({ check_name: VALIDATE_CHECK, app_id: '15368', per_page: '10' })
+        .reply(200, {
+          total_count: runs.length,
+          check_runs: runs.map((run) => ({ app: { id: 15368 }, ...run }))
+        })
     }
 
     function merged(number) {
@@ -597,6 +601,19 @@ describe('submit', () => {
       expect(merge.isDone()).toBe(true)
       expect(timers.sleep).toHaveBeenCalledTimes(2)
       expect(timers.sleep).toHaveBeenCalledWith(15_000)
+    })
+
+    test('ignores a passing run of the same name from another App', async () => {
+      newPullRequest(19)
+      autoMergeRefused()
+      checkRuns([
+        { id: 6, status: 'completed', conclusion: 'success', app: { id: 999 } },
+        { id: 7, status: 'completed', conclusion: 'failure' }
+      ])
+
+      await expect(
+        submit(commandInput({ env: submission() }))
+      ).rejects.toMatchObject({ outcome: 'checks-failed' })
     })
 
     test('never merges a head whose validate check failed', async () => {

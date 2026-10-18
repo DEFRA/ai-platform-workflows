@@ -109,14 +109,30 @@ upsert_ruleset() {
 }
 
 ensure_environment() {
-  local repo="$1" name="$2"
+  local repo="$1" name="$2" policies has_main=false id type policy_name
 
   write_api -X PUT "repos/$owner/$repo/environments/$name" --input - <<< '{
     "deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}
   }'
 
-  if [[ "$(read_api "repos/$owner/$repo/environments/$name/deployment-branch-policies" \
-      --jq '.branch_policies[] | select(.name == "main") | .id' 2> /dev/null)" == '' ]]; then
+  # Reconcile, not append: anything but the branch policy named main goes,
+  # a tag policy of that name included, so "main only" is what remains.
+  policies="$(read_api "repos/$owner/$repo/environments/$name/deployment-branch-policies" \
+    --jq '.branch_policies[] | "\(.id) \(.type // "branch") \(.name)"' 2> /dev/null || true)"
+
+  while read -r id type policy_name; do
+    [[ -z "$id" ]] && continue
+
+    if [[ "$type" == branch && "$policy_name" == main ]]; then
+      has_main=true
+      continue
+    fi
+
+    write_api -X DELETE "repos/$owner/$repo/environments/$name/deployment-branch-policies/$id"
+    echo "$repo: Environment $name no longer allows $type $policy_name"
+  done <<< "$policies"
+
+  if [[ "$has_main" != true ]]; then
     write_api -X POST "repos/$owner/$repo/environments/$name/deployment-branch-policies" \
       -f name=main -f type=branch
   fi
@@ -148,6 +164,13 @@ configure_repository() {
   local repo="$1" kind checks release_tags legacy bypass env
 
   kind="$(q -r ".repositories[\"$repo\"].kind" "$manifest")"
+
+  # Nothing is written to a repository the manifest does not describe.
+  if [[ "$kind" != machine && "$kind" != human ]]; then
+    echo "::error::$repo is not in $manifest"
+    return 1
+  fi
+
   checks="$(q -c ".repositories[\"$repo\"].checks // []" "$manifest")"
   release_tags="$(q -r ".repositories[\"$repo\"].releaseTags // false" "$manifest")"
   legacy="$(q -r "(.legacyEnvironments + (.repositories[\"$repo\"].legacyEnvironments // [])) | unique | .[]" "$manifest")"
@@ -159,36 +182,32 @@ configure_repository() {
     -f squash_merge_commit_title=PR_TITLE -f squash_merge_commit_message=PR_BODY
   echo "$repo: squash only, auto-merge allowed, branches deleted on merge"
 
-  case "$kind" in
-    machine)
-      # No App ever bypasses machine main. Engineers may, through a pull
-      # request only, for a change outside environments/ that the validate
-      # check fails closed on.
-      bypass='[]'
-      if [[ -n "$engineers_team" ]]; then
-        bypass="[{\"actor_id\": $engineers_team, \"actor_type\": \"Team\", \"bypass_mode\": \"pull_request\"}]"
-      fi
-      upsert_ruleset "$repo" "$(ruleset_body machine-main '[]' "$bypass")"
-      for env in ${environments//,/ }; do
-        ensure_environment "$repo" "$env"
-      done
-      ;;
-    human)
-      # Only a repository that releases lets the App merge its release PR.
-      bypass='[]'
-      if [[ "$release_tags" == true ]]; then
-        bypass="[{\"actor_id\": $app_id, \"actor_type\": \"Integration\", \"bypass_mode\": \"pull_request\"}]"
-      fi
-      upsert_ruleset "$repo" "$(ruleset_body human-main "$checks" "$bypass")"
-      ;;
-    *)
-      echo "::error::$repo is not in $manifest"
-      return 1
-      ;;
-  esac
+  if [[ "$kind" == machine ]]; then
+    # No App ever bypasses machine main. Engineers may, through a pull
+    # request only, for a change outside environments/ that the validate
+    # check fails closed on.
+    bypass='[]'
+    if [[ -n "$engineers_team" ]]; then
+      bypass="[{\"actor_id\": $engineers_team, \"actor_type\": \"Team\", \"bypass_mode\": \"pull_request\"}]"
+    fi
+    upsert_ruleset "$repo" "$(ruleset_body machine-main '[]' "$bypass")"
+    for env in ${environments//,/ }; do
+      ensure_environment "$repo" "$env"
+    done
+  else
+    # Only a repository that releases lets the App merge its release PR.
+    bypass='[]'
+    if [[ "$release_tags" == true ]]; then
+      bypass="[{\"actor_id\": $app_id, \"actor_type\": \"Integration\", \"bypass_mode\": \"pull_request\"}]"
+    fi
+    upsert_ruleset "$repo" "$(ruleset_body human-main "$checks" "$bypass")"
+  fi
 
   if [[ "$release_tags" == true ]]; then
+    # The App alone writes the release branch and the v* tags, so a release
+    # pull request the App merges through its bypass holds only its commits.
     bypass="[{\"actor_id\": $app_id, \"actor_type\": \"Integration\", \"bypass_mode\": \"always\"}]"
+    upsert_ruleset "$repo" "$(ruleset_body release-branch '[]' "$bypass")"
     upsert_ruleset "$repo" "$(ruleset_body release-tags '[]' "$bypass")"
   fi
 

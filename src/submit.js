@@ -22,6 +22,8 @@ const DAY_MS = 24 * 60 * 60 * 1000
 // The one check a state repository requires on main (design B); the caller
 // job must be named validate-desired-state for the context to match.
 const VALIDATE_CHECK = 'validate-desired-state / validate'
+// GitHub Actions, the one App whose check runs count (as in the ruleset).
+const ACTIONS_APP_ID = 15368
 // GitHub refuses to arm auto-merge on a pull request nothing blocks.
 const MERGEABLE_NOW = /is in (clean|unstable|has_hooks) status/i
 const DEFAULT_MERGE_WAIT_SECONDS = 600
@@ -247,19 +249,24 @@ const TIMERS = {
 }
 
 // The newest run of the validate check on a commit, or null before it starts.
+// Only a run published by GitHub Actions counts: another integration with
+// checks write permission could publish a passing run under the same name.
 async function validateCheck(github, { owner, repo }, sha) {
   const { data } = await github.rest.checks.listForRef({
     owner,
     repo,
     ref: sha,
     check_name: VALIDATE_CHECK,
+    app_id: ACTIONS_APP_ID,
     per_page: 10
   })
 
-  return data.check_runs.reduce(
-    (newest, check) => (!newest || check.id > newest.id ? check : newest),
-    null
-  )
+  return data.check_runs
+    .filter((check) => check.app?.id === ACTIONS_APP_ID)
+    .reduce(
+      (newest, check) => (!newest || check.id > newest.id ? check : newest),
+      null
+    )
 }
 
 // Nothing on main blocks the pull request, so auto-merge has nothing to wait

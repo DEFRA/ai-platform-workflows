@@ -122,6 +122,9 @@ describe('repo-settings.sh', () => {
     expect(result.stdout).toContain(
       'ai-platform-infra: ruleset aip-release-tags created'
     )
+    expect(result.stdout).toContain(
+      'ai-platform-infra: ruleset aip-release-branch created'
+    )
     expect(result.stdout).not.toContain('Environment infradev allows main only')
   })
 
@@ -154,11 +157,46 @@ describe('repo-settings.sh', () => {
     expect(result.stdout).not.toContain('submit.yml')
   })
 
-  test('refuses a repository the manifest does not know', () => {
+  test('refuses a repository the manifest does not know, writing nothing to it', () => {
     const result = run(['--environments', 'infradev', '--repos', 'other'])
 
     expect(result.status).toBe(1)
     expect(result.stdout).toContain('::error::other is not in')
+    expect(writes()).toEqual([])
+  })
+
+  test('removes every deployment branch policy but the branch named main, a tag of that name included', () => {
+    workspace.write(
+      'gh-fixtures/repos_DEFRA_ai-platform-tenants_environments_infradev_deployment-branch-policies.json',
+      JSON.stringify({
+        branch_policies: [
+          { id: 11, name: 'feature/*', type: 'branch' },
+          { id: 12, name: 'main', type: 'tag' },
+          { id: 13, name: 'v*', type: 'tag' }
+        ]
+      })
+    )
+
+    const result = run([
+      '--environments',
+      'infradev',
+      '--repos',
+      'ai-platform-tenants'
+    ])
+
+    expect(result.status).toBe(0)
+    const lines = writes()
+    for (const id of [11, 12, 13]) {
+      expect(lines).toContainEqual(
+        `gh api -X DELETE repos/DEFRA/ai-platform-tenants/environments/infradev/deployment-branch-policies/${id}`
+      )
+    }
+    expect(lines).toContainEqual(
+      'gh api -X POST repos/DEFRA/ai-platform-tenants/environments/infradev/deployment-branch-policies -f name=main -f type=branch'
+    )
+    expect(result.stdout).toContain(
+      'ai-platform-tenants: Environment infradev no longer allows tag main'
+    )
   })
 })
 
@@ -277,6 +315,25 @@ describe('the ruleset bodies the script sends', () => {
       'update',
       'deletion'
     ])
+
+    // The release branch is the App's alone, so the pull request it merges
+    // through its bypass carries nobody else's commits.
+    const [branch] = bodies().filter(
+      (body) => body.name === 'aip-release-branch'
+    )
+    expect(branch.target).toBe('branch')
+    expect(branch.conditions.ref_name.include).toEqual([
+      'refs/heads/release-please--*'
+    ])
+    expect(branch.bypass_actors).toEqual([
+      { actor_id: 5059913, actor_type: 'Integration', bypass_mode: 'always' }
+    ])
+    expect(branch.rules.map((rule) => rule.type)).toEqual([
+      'creation',
+      'update',
+      'deletion',
+      'non_fast_forward'
+    ])
   })
 
   test('give a human repository that releases nothing no bypass actor', () => {
@@ -293,8 +350,10 @@ describe('the ruleset bodies the script sends', () => {
     ).toEqual([
       { context: 'validate-environments / validate', integration_id: 15368 }
     ])
-    expect(bodies().some((body) => body.name === 'aip-release-tags')).toBe(
-      false
-    )
+    expect(
+      bodies().some((body) =>
+        ['aip-release-tags', 'aip-release-branch'].includes(body.name)
+      )
+    ).toBe(false)
   })
 })

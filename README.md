@@ -7,18 +7,18 @@ repositories: `ai-platform-infra`, `ai-platform-environments`, `ai-platform-tena
 
 ## Workflows
 
-| Workflow                     | Called from                     | Trigger in the caller                 | Does                                                                                                                                       |
-| ---------------------------- | ------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `submit-desired-state.yml`   | tenants, deployments            | `workflow_dispatch` (`submit.yml`)    | Validates at the pin, commits as the App on `op/{id}`, opens the PR, squash auto-merge; `abandon`                                          |
-| `validate-desired-state.yml` | tenants, deployments            | `pull_request`, `pull_request_review` | Required check `validate-desired-state / validate`, offline, at the pin of the one environment changed                                     |
-| `apply-state.yml`            | deployments (`state: platform`) | push to `main`, `workflow_dispatch`   | Platform apply with the safeguards and a run report, then dispatches the tenants apply                                                     |
-| `apply-state.yml`            | tenants (`state: tenants`)      | push to `main`, `workflow_dispatch`   | Tenants apply once the platform apply covers the pin (R5), with the safeguards and a run report; purges the Entra registrations it removed |
-| `validate-environments.yml`  | environments                    | `pull_request`, push to `main`        | Required check `validate-environments / validate`; dispatches the platform apply after a merge                                             |
-| `infra-checks.yml`           | infra                           | `pull_request`                        | Required checks `infra-checks / validate`, `lint`, `schemas`, `catalogue`, `security` (checkov)                                            |
-| `release.yml`                | infra (`kind: infra`), this     | push to `main`                        | release-please; infra submits `autoPin` pins; this repository moves the major tag                                                          |
-| `release-merge.yml`          | infra, this                     | `workflow_run` of the PR checks       | The App merges the release-please PR once every check `main` requires has passed                                                           |
-| `prune-op-branches.yml`      | tenants, deployments            | nightly `schedule`                    | Deletes `op/*` branches older than seven days with no open PR (R7)                                                                         |
-| `workflow-checks.yml`        | this repository                 | `pull_request`                        | `actionlint` and shellcheck, unit and script tests, lint and audit                                                                         |
+| Workflow                     | Called from                     | Trigger in the caller               | Does                                                                                                                                                                                              |
+| ---------------------------- | ------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `submit-desired-state.yml`   | tenants, deployments            | `workflow_dispatch` (`submit.yml`)  | Validates at the pin, commits as the App on `op/{id}`, opens the PR and arms squash auto-merge; when nothing on `main` blocks the PR it waits for the validate check and merges itself; `abandon` |
+| `validate-desired-state.yml` | tenants, deployments            | `pull_request`                      | Required check `validate-desired-state / validate` (the caller job must be named `validate-desired-state`), offline, at the pin of the one environment changed                                    |
+| `apply-state.yml`            | deployments (`state: platform`) | push to `main`, `workflow_dispatch` | Platform apply with the safeguards and a run report, then dispatches the tenants apply                                                                                                            |
+| `apply-state.yml`            | tenants (`state: tenants`)      | push to `main`, `workflow_dispatch` | Tenants apply once the platform apply covers the pin (R5), with the safeguards and a run report; purges the Entra registrations it removed                                                        |
+| `validate-environments.yml`  | environments                    | `pull_request`, push to `main`      | Required check `validate-environments / validate`; dispatches the platform apply after a merge                                                                                                    |
+| `infra-checks.yml`           | infra                           | `pull_request`                      | Required checks `infra-checks / validate`, `lint`, `schemas`, `catalogue`, `security` (checkov)                                                                                                   |
+| `release.yml`                | infra (`kind: infra`), this     | push to `main`                      | release-please; infra submits `autoPin` pins; this repository moves the major tag                                                                                                                 |
+| `release-merge.yml`          | infra, this                     | `workflow_run` of the PR checks     | The App merges the release-please PR once every check `main` requires has passed                                                                                                                  |
+| `prune-op-branches.yml`      | tenants, deployments            | nightly `schedule`                  | Deletes `op/*` branches older than seven days with no open PR (R7)                                                                                                                                |
+| `workflow-checks.yml`        | this repository                 | `pull_request`                      | `actionlint` and shellcheck, unit and script tests, lint and audit                                                                                                                                |
 
 A push applies every environment whose folder changed since its last successful apply, so a run superseded
 by a newer one (R1) loses nothing; a dispatch applies the environment it names.
@@ -66,6 +66,22 @@ variable wins over a repository variable of the same name. In Phase 1 the one Ap
 Runners: each registry entry's `runner` decides where its apply jobs run, as standard labels
 (`["ubuntu-26.04"]`, Phase 1) or a larger-runner group with Azure private networking (`{"group": "aip-{env}"}`,
 the target). Changing it is a registry pull request, not a workflow change.
+
+## Repository settings
+
+Auto-merge only arms on a pull request something blocks, and `release-merge` merges nothing while `main`
+requires no check, so every GitOps repository needs its ruleset. [`scripts/setup/repo-settings.sh`](scripts/setup)
+applies them idempotently from the JSON in that folder (`--dry-run` prints the calls); design B `#rulesets`
+is the source.
+
+| Repositories                          | `main` ruleset                                                                                                              | Also                                                                          |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `ai-platform-tenants`, `-deployments` | Pull request required, no approvals; required check `validate-desired-state / validate`; squash only; no bypass             | Auto-merge allowed; Environments `{env}` on `main` only; no other Environment |
+| `ai-platform-infra`, `-workflows`     | Pull request with one approval; the required checks of the PR workflow; squash only; the App bypasses to merge a release PR | Auto-merge allowed; tag ruleset `v*` creatable by the App only                |
+| `ai-platform-environments`            | Pull request with one approval; required check `validate-environments / validate`; squash only                              | –                                                                             |
+
+A disabled workflow is treated as an engineer's pause: a dispatch to it fails with `workflow-disabled` and
+nothing re-enables it. The script lists any disabled workflow it finds.
 
 ## Releases
 

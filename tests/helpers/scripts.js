@@ -36,6 +36,37 @@ printf 'az %s\\n' "$*" >> "$AIP_TEST_LOG"
 [[ "$*" != *"\${AIP_TEST_FAIL:-none}"* ]]
 `
 
+// Records each call to the GitHub CLI. A read answers from
+// gh-fixtures/{path with / as _}.json when the file exists, else with the
+// empty collection GitHub returns, or 404 for one Environment; --jq is
+// applied with jq. Writes succeed silently.
+const FAKE_GH = `#!/usr/bin/env bash
+printf 'gh %s\\n' "$*" >> "$AIP_TEST_LOG"
+if [[ " $* " == *" --input - "* ]]; then printf 'body %s\\n' "$(jq -c . )" >> "$AIP_TEST_LOG"; fi
+method=GET; path=''; filter=''
+args=("$@")
+for ((i = 0; i < \${#args[@]}; i++)); do
+  case "\${args[i]}" in
+    -X) method="\${args[i + 1]}"; ((i++)) ;;
+    --jq) filter="\${args[i + 1]}"; ((i++)) ;;
+    --input|-f|-F) ((i++)) ;;
+    repos/*) [[ -z "$path" ]] && path="\${args[i]}" ;;
+  esac
+done
+[[ "$method" != GET ]] && exit 0
+file="$AIP_TEST_GH/\${path//\\//_}.json"
+if [[ -f "$file" ]]; then body="$(cat "$file")"
+else
+  case "$path" in
+    */rulesets) body='[]' ;;
+    */deployment-branch-policies) body='{"total_count":0,"branch_policies":[]}' ;;
+    */actions/workflows) body='{"total_count":0,"workflows":[]}' ;;
+    *) exit 1 ;;
+  esac
+fi
+if [[ -n "$filter" ]]; then jq -r "$filter" <<< "$body"; else echo "$body"; fi
+`
+
 // Records each call; writes the files the scripts expect from the CLI.
 const FAKE_CHECKS = `const { appendFileSync, writeFileSync } = require('node:fs')
 const args = process.argv.slice(2)
@@ -93,7 +124,10 @@ function createWorkspace() {
   chmodSync(join(bin, 'terraform'), 0o755)
   writeFileSync(join(bin, 'az'), FAKE_AZ)
   chmodSync(join(bin, 'az'), 0o755)
+  writeFileSync(join(bin, 'gh'), FAKE_GH)
+  chmodSync(join(bin, 'gh'), 0o755)
   writeFileSync(join(dir, 'fake-checks.cjs'), FAKE_CHECKS)
+  mkdirSync(join(dir, 'gh-fixtures'))
 
   if (process.platform === 'win32') {
     writeFileSync(join(bin, 'jq'), JQ_SHIM)
@@ -139,6 +173,7 @@ function createWorkspace() {
               Object.entries(files).map(([name, path]) => [name, posix(path)])
             ),
             AIP_TEST_BIN: bashPath(bin),
+            AIP_TEST_GH: posix(join(dir, 'gh-fixtures')),
             RUNNER_TEMP: posix(dir),
             AIP_CHECKS: posix(join(dir, 'fake-checks.cjs')),
             ...env

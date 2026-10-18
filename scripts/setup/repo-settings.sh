@@ -3,26 +3,30 @@
 # Repository settings), idempotently, for an administrator to run:
 #
 #   repo-settings.sh --app-id 5059913 --environments infradev[,dev,...] \
-#     [--owner DEFRA] [--repos a,b] [--dry-run]
+#     [--engineers-team 12568379] [--owner DEFRA] [--repos a,b] [--dry-run]
 #
 # For each repository in repositories.json: merge settings and auto-merge;
 # the main ruleset from rulesets/, with the required checks and, in human
 # repositories, the App as the pull-request bypass actor that merges a
-# release; the v* tag ruleset where releaseTags is set; in machine
-# repositories one Environment per real environment, allowing main only;
-# legacy Environments removed; disabled workflows reported. Variables and
-# secrets are not touched. --dry-run reads but prints every write.
+# release; in machine repositories the engineers' team, when given, as the
+# pull-request bypass actor for a change outside environments/, which the
+# validate check fails closed on; the v* tag ruleset where releaseTags is
+# set; in machine repositories one Environment per real environment,
+# allowing main only; legacy Environments removed; disabled workflows
+# reported. Variables and secrets are not touched. --dry-run reads but
+# prints every write.
 set -euo pipefail
 
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 owner=DEFRA
 app_id=''
+engineers_team=''
 environments=''
 only=''
 dry_run=false
 
 usage() {
-  sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit "${1:-1}"
 }
 
@@ -30,6 +34,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --owner) owner="$2"; shift 2 ;;
     --app-id) app_id="$2"; shift 2 ;;
+    --engineers-team) engineers_team="$2"; shift 2 ;;
     --environments) environments="$2"; shift 2 ;;
     --repos) only="$2"; shift 2 ;;
     --dry-run) dry_run=true; shift ;;
@@ -40,6 +45,11 @@ done
 
 if [[ ! "$app_id" =~ ^[0-9]+$ ]]; then
   echo "::error::--app-id must be the GitHub App's numeric ID"
+  usage
+fi
+
+if [[ -n "$engineers_team" && ! "$engineers_team" =~ ^[0-9]+$ ]]; then
+  echo "::error::--engineers-team must be the GitHub team's numeric ID"
   usage
 fi
 
@@ -151,7 +161,14 @@ configure_repository() {
 
   case "$kind" in
     machine)
-      upsert_ruleset "$repo" "$(ruleset_body machine-main '[]' '[]')"
+      # No App ever bypasses machine main. Engineers may, through a pull
+      # request only, for a change outside environments/ that the validate
+      # check fails closed on.
+      bypass='[]'
+      if [[ -n "$engineers_team" ]]; then
+        bypass="[{\"actor_id\": $engineers_team, \"actor_type\": \"Team\", \"bypass_mode\": \"pull_request\"}]"
+      fi
+      upsert_ruleset "$repo" "$(ruleset_body machine-main '[]' "$bypass")"
       for env in ${environments//,/ }; do
         ensure_environment "$repo" "$env"
       done

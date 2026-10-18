@@ -204,6 +204,40 @@ describe('the ruleset bodies the script sends', () => {
     )
   })
 
+  test('let the engineers team, when named, bypass machine main through a pull request only, never the App', () => {
+    expect(
+      run([
+        '--environments',
+        'infradev',
+        '--engineers-team',
+        '12568379',
+        '--repos',
+        'ai-platform-tenants'
+      ]).status
+    ).toBe(0)
+
+    const [ruleset] = bodies().filter(
+      (body) => body.name === 'aip-machine-main'
+    )
+    expect(ruleset.bypass_actors).toEqual([
+      { actor_id: 12568379, actor_type: 'Team', bypass_mode: 'pull_request' }
+    ])
+  })
+
+  test('refuse an engineers team that is not a numeric ID', () => {
+    const result = run([
+      '--environments',
+      'infradev',
+      '--engineers-team',
+      'ai-dev-team'
+    ])
+
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain(
+      '::error::--engineers-team must be the GitHub team'
+    )
+  })
+
   test('carry the checks and the App as pull-request bypass actor in a human repository, and the tag rules', () => {
     expect(
       run(['--environments', 'infradev', '--repos', 'ai-platform-infra']).status

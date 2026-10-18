@@ -616,6 +616,24 @@ describe('submit', () => {
       ).rejects.toMatchObject({ outcome: 'checks-failed' })
     })
 
+    test('waits past a run the concurrency group cancelled for the one that replaced it', async () => {
+      newPullRequest(20)
+      autoMergeRefused()
+      checkRuns([{ id: 8, status: 'completed', conclusion: 'cancelled' }])
+      checkRuns([
+        { id: 8, status: 'completed', conclusion: 'cancelled' },
+        { id: 9, status: 'completed', conclusion: 'success' }
+      ])
+      const merge = merged(20)
+      const timers = clock()
+
+      await expect(
+        submit(commandInput({ env: submission(), timers }))
+      ).resolves.toMatchObject({ outcome: 'merged' })
+      expect(merge.isDone()).toBe(true)
+      expect(timers.sleep).toHaveBeenCalledTimes(1)
+    })
+
     test('never merges a head whose validate check failed', async () => {
       newPullRequest(16)
       autoMergeRefused()

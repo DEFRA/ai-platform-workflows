@@ -285,7 +285,9 @@ async function mergeWhenValidated(github, repo, pull, { core, env, timers }) {
   for (;;) {
     const check = await validateCheck(github, repo, pull.head.sha)
 
-    if (check?.status === 'completed') {
+    // A run the caller's concurrency group cancelled for a newer one (the
+    // labels this step adds trigger it) is no verdict; the newer run's is.
+    if (check?.status === 'completed' && check.conclusion !== 'cancelled') {
       if (check.conclusion !== 'success') {
         throw new OutcomeError(
           'checks-failed',

@@ -50,6 +50,11 @@ fi
 
 manifest="$here/repositories.json"
 
+# jq, with the carriage returns Windows builds add stripped.
+q() {
+  jq "$@" | tr -d '\r'
+}
+
 # A read; runs in a dry run too.
 read_api() {
   gh api "$@"
@@ -81,7 +86,7 @@ ruleset_body() {
 # Creates the ruleset or replaces the one of the same name.
 upsert_ruleset() {
   local repo="$1" body="$2" name existing
-  name="$(jq -r .name <<< "$body")"
+  name="$(q -r .name <<< "$body")"
   existing="$(read_api "repos/$owner/$repo/rulesets" --jq ".[] | select(.name == \"$name\") | .id")"
 
   if [[ -n "$existing" ]]; then
@@ -132,10 +137,10 @@ report_disabled_workflows() {
 configure_repository() {
   local repo="$1" kind checks release_tags legacy bypass env
 
-  kind="$(jq -r ".repositories[\"$repo\"].kind" "$manifest")"
-  checks="$(jq -c ".repositories[\"$repo\"].checks // []" "$manifest")"
-  release_tags="$(jq -r ".repositories[\"$repo\"].releaseTags // false" "$manifest")"
-  legacy="$(jq -r "(.legacyEnvironments + (.repositories[\"$repo\"].legacyEnvironments // [])) | unique | .[]" "$manifest")"
+  kind="$(q -r ".repositories[\"$repo\"].kind" "$manifest")"
+  checks="$(q -c ".repositories[\"$repo\"].checks // []" "$manifest")"
+  release_tags="$(q -r ".repositories[\"$repo\"].releaseTags // false" "$manifest")"
+  legacy="$(q -r "(.legacyEnvironments + (.repositories[\"$repo\"].legacyEnvironments // [])) | unique | .[]" "$manifest")"
 
   write_api -X PATCH "repos/$owner/$repo" \
     -F allow_auto_merge=true -F allow_squash_merge=true \
@@ -152,7 +157,11 @@ configure_repository() {
       done
       ;;
     human)
-      bypass="[{\"actor_id\": $app_id, \"actor_type\": \"Integration\", \"bypass_mode\": \"pull_request\"}]"
+      # Only a repository that releases lets the App merge its release PR.
+      bypass='[]'
+      if [[ "$release_tags" == true ]]; then
+        bypass="[{\"actor_id\": $app_id, \"actor_type\": \"Integration\", \"bypass_mode\": \"pull_request\"}]"
+      fi
       upsert_ruleset "$repo" "$(ruleset_body human-main "$checks" "$bypass")"
       ;;
     *)
@@ -173,7 +182,7 @@ configure_repository() {
   report_disabled_workflows "$repo"
 }
 
-repos="$(jq -r '.repositories | keys[]' "$manifest")"
+repos="$(q -r '.repositories | keys[]' "$manifest")"
 
 if [[ -n "$only" ]]; then
   repos="${only//,/ }"

@@ -244,4 +244,23 @@ describe('the ruleset bodies the script sends', () => {
       'deletion'
     ])
   })
+
+  test('give a human repository that releases nothing no bypass actor', () => {
+    expect(
+      run(['--environments', 'infradev', '--repos', 'ai-platform-environments'])
+        .status
+    ).toBe(0)
+
+    const [main] = bodies().filter((body) => body.name === 'aip-human-main')
+    expect(main.bypass_actors).toEqual([])
+    expect(
+      main.rules.find((rule) => rule.type === 'required_status_checks')
+        .parameters.required_status_checks
+    ).toEqual([
+      { context: 'validate-environments / validate', integration_id: 15368 }
+    ])
+    expect(bodies().some((body) => body.name === 'aip-release-tags')).toBe(
+      false
+    )
+  })
 })

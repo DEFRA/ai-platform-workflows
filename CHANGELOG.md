@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/DEFRA/ai-platform-workflows/compare/v1.1.0...v1.1.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* merge validated pull requests without a person, and add the repository settings script ([#10](https://github.com/DEFRA/ai-platform-workflows/issues/10)) ([b773471](https://github.com/DEFRA/ai-platform-workflows/commit/b773471b4e36841fa4c40fc236a83d2a08517fc4))
+
 ## [1.1.0](https://github.com/DEFRA/ai-platform-workflows/compare/v1.0.0...v1.1.0) (2026-10-15)
 
 

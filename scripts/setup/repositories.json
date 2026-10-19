@@ -1,0 +1,35 @@
+{
+  "$comment": "Repository settings the GitOps workflows rely on (README, Repository settings). Checks are the contexts the main ruleset requires; machine repositories require only validate-desired-state / validate.",
+  "repositories": {
+    "ai-platform-tenants": { "kind": "machine" },
+    "ai-platform-deployments": { "kind": "machine" },
+    "ai-platform-infra": {
+      "kind": "human",
+      "checks": [
+        "infra-checks / validate",
+        "infra-checks / lint",
+        "infra-checks / schemas",
+        "infra-checks / catalogue",
+        "infra-checks / security"
+      ],
+      "releaseTags": true,
+      "legacyEnvironments": ["infradev", "release"]
+    },
+    "ai-platform-workflows": {
+      "kind": "human",
+      "checks": ["workflow-checks / actionlint", "workflow-checks / tests"],
+      "releaseTags": true,
+      "legacyEnvironments": ["release"]
+    },
+    "ai-platform-environments": {
+      "kind": "human",
+      "checks": ["validate-environments / validate"]
+    }
+  },
+  "legacyEnvironments": [
+    "gitops-reader",
+    "gitops-writer",
+    "gitops-dispatch",
+    "release"
+  ]
+}

@@ -105,6 +105,9 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
           permission-pull-requests: write
+          # Reads the validate check when the step must merge the pull
+          # request itself, because nothing on main blocks it.
+          permission-checks: read
 
       - name: Abandon
         if: inputs.action == 'abandon'

@@ -1,6 +1,8 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
+import { OutcomeError } from './outcome.js'
+
 // The REST API version the GitOps contract is written against; with it a
 // workflow dispatch returns the run it started.
 const API_VERSION = '2026-03-10'
@@ -292,22 +294,35 @@ async function verifyRelease(octokit, owner, { release, sha }) {
 }
 
 /**
- * Starts a workflow on main.
+ * Starts a workflow on main. A disabled workflow is an engineer's pause, so
+ * the dispatch fails with the outcome `workflow-disabled` rather than
+ * re-enabling it; the Actions tab of the target repository turns it back on.
  *
  * @param {object} octokit - Client with actions write on the repository.
  * @param {{owner: string, repo: string, workflow: string, inputs: object}} run
  * @returns {Promise<string | null>} The started run's URL.
  */
 async function dispatchWorkflow(octokit, { owner, repo, workflow, inputs }) {
-  const { data } = await octokit.rest.actions.createWorkflowDispatch({
-    owner,
-    repo,
-    workflow_id: workflow,
-    ref: 'main',
-    inputs
-  })
+  try {
+    const { data } = await octokit.rest.actions.createWorkflowDispatch({
+      owner,
+      repo,
+      workflow_id: workflow,
+      ref: 'main',
+      inputs
+    })
 
-  return data?.html_url ?? null
+    return data?.html_url ?? null
+  } catch (error) {
+    if (error.status === 422 && /disabled workflow/i.test(error.message)) {
+      throw new OutcomeError(
+        'workflow-disabled',
+        `${owner}/${repo} ${workflow} is disabled; enable it in that repository's Actions tab, then dispatch again`
+      )
+    }
+
+    throw error
+  }
 }
 
 /**

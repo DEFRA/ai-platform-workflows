@@ -8,7 +8,8 @@ import {
   commitMessage,
   prepareSubmit,
   prune,
-  submit
+  submit,
+  VALIDATE_CHECK
 } from '../../src/submit.js'
 import {
   fileContent,
@@ -499,6 +500,214 @@ describe('submit', () => {
     await expect(
       submit(commandInput({ env: submission() }))
     ).rejects.toMatchObject({ status: 403 })
+  })
+
+  describe('when nothing on main blocks the pull request', () => {
+    const HEAD = 'b'.repeat(40)
+
+    function newPullRequest(number) {
+      noOperationPullRequest()
+      openPullRequests([])
+      nock(API).post(`${TENANTS}/git/refs`).reply(201, {})
+      nock(API)
+        .post('/graphql', ({ query }) => query.includes('createCommitOnBranch'))
+        .reply(200, { data: {} })
+      pullRequestCreated(number)
+      nock(API).post(`${TENANTS}/issues/${number}/labels`).reply(200, [])
+    }
+
+    // GitHub refuses to arm auto-merge when no required check or review
+    // blocks the pull request.
+    function autoMergeRefused(status = 'clean') {
+      return nock(API)
+        .post('/graphql', ({ query }) =>
+          query.includes('enablePullRequestAutoMerge')
+        )
+        .reply(200, {
+          data: { enablePullRequestAutoMerge: null },
+          errors: [
+            {
+              type: 'UNPROCESSABLE',
+              path: ['enablePullRequestAutoMerge'],
+              message: `Pull request Pull request is in ${status} status`
+            }
+          ]
+        })
+    }
+
+    // The runs GitHub Actions published, unless a run names another App.
+    function checkRuns(runs) {
+      return nock(API)
+        .get(`${TENANTS}/commits/${HEAD}/check-runs`)
+        .query({ check_name: VALIDATE_CHECK, app_id: '15368', per_page: '10' })
+        .reply(200, {
+          total_count: runs.length,
+          check_runs: runs.map((run) => ({ app: { id: 15368 }, ...run }))
+        })
+    }
+
+    function merged(number) {
+      return nock(API)
+        .put(
+          `${TENANTS}/pulls/${number}/merge`,
+          (body) =>
+            body.merge_method === 'squash' &&
+            body.sha === HEAD &&
+            body.commit_title === `chore(infradev): write alpha (#${number})` &&
+            body.commit_message.startsWith(`Operation-Id: ${OPERATION}`)
+        )
+        .reply(200, { merged: true })
+    }
+
+    // A clock that moves only when the step sleeps.
+    function clock() {
+      let now = 1_000_000
+      return {
+        now: () => now,
+        sleep: vi.fn(async (ms) => {
+          now += ms
+        })
+      }
+    }
+
+    test('merges itself once the validate check has passed on the head', async () => {
+      newPullRequest(14)
+      autoMergeRefused()
+      checkRuns([{ id: 1, status: 'completed', conclusion: 'success' }])
+      const merge = merged(14)
+
+      await expect(
+        submit(commandInput({ env: submission() }))
+      ).resolves.toMatchObject({ outcome: 'merged', number: 14 })
+      expect(merge.isDone()).toBe(true)
+      expect(jobSummary()).toContain('### merged')
+    })
+
+    test('waits for the validate check and trusts its newest run', async () => {
+      newPullRequest(15)
+      autoMergeRefused('unstable')
+      checkRuns([])
+      checkRuns([{ id: 2, status: 'in_progress', conclusion: null }])
+      checkRuns([
+        { id: 2, status: 'completed', conclusion: 'failure' },
+        { id: 3, status: 'completed', conclusion: 'success' }
+      ])
+      const merge = merged(15)
+      const timers = clock()
+
+      await expect(
+        submit(commandInput({ env: submission(), timers }))
+      ).resolves.toMatchObject({ outcome: 'merged' })
+      expect(merge.isDone()).toBe(true)
+      expect(timers.sleep).toHaveBeenCalledTimes(2)
+      expect(timers.sleep).toHaveBeenCalledWith(15_000)
+    })
+
+    test('ignores a passing run of the same name from another App', async () => {
+      newPullRequest(19)
+      autoMergeRefused()
+      checkRuns([
+        { id: 6, status: 'completed', conclusion: 'success', app: { id: 999 } },
+        { id: 7, status: 'completed', conclusion: 'failure' }
+      ])
+
+      await expect(
+        submit(commandInput({ env: submission() }))
+      ).rejects.toMatchObject({ outcome: 'checks-failed' })
+    })
+
+    test('waits past a run the concurrency group cancelled for the one that replaced it', async () => {
+      newPullRequest(20)
+      autoMergeRefused()
+      checkRuns([{ id: 8, status: 'completed', conclusion: 'cancelled' }])
+      checkRuns([
+        { id: 8, status: 'completed', conclusion: 'cancelled' },
+        { id: 9, status: 'completed', conclusion: 'success' }
+      ])
+      const merge = merged(20)
+      const timers = clock()
+
+      await expect(
+        submit(commandInput({ env: submission(), timers }))
+      ).resolves.toMatchObject({ outcome: 'merged' })
+      expect(merge.isDone()).toBe(true)
+      expect(timers.sleep).toHaveBeenCalledTimes(1)
+    })
+
+    test('never merges a head whose validate check failed', async () => {
+      newPullRequest(16)
+      autoMergeRefused()
+      checkRuns([{ id: 4, status: 'completed', conclusion: 'failure' }])
+
+      await expect(
+        submit(commandInput({ env: submission() }))
+      ).rejects.toMatchObject({
+        outcome: 'checks-failed',
+        message: expect.stringMatching(
+          /^validate-desired-state \/ validate concluded failure on https:\/\//
+        )
+      })
+    })
+
+    test('leaves the pull request open, reported, past the wait', async () => {
+      newPullRequest(17)
+      autoMergeRefused()
+      checkRuns([]).persist()
+      const warning = vi.fn()
+      const timers = clock()
+      const input = commandInput({
+        env: submission({ AIP_MERGE_WAIT_SECONDS: '20' }),
+        timers
+      })
+      input.core = { ...input.core, warning }
+
+      await expect(submit(input)).resolves.toMatchObject({
+        outcome: 'pr-raised',
+        number: 17
+      })
+      expect(timers.sleep).toHaveBeenCalledTimes(2)
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining('had not completed')
+      )
+    })
+
+    test('surfaces any other auto-merge error', async () => {
+      newPullRequest(18)
+      nock(API)
+        .post('/graphql', ({ query }) =>
+          query.includes('enablePullRequestAutoMerge')
+        )
+        .reply(200, {
+          data: null,
+          errors: [{ type: 'FORBIDDEN', message: 'Resource not accessible' }]
+        })
+
+      await expect(
+        submit(commandInput({ env: submission() }))
+      ).rejects.toMatchObject({ name: 'GraphqlResponseError' })
+    })
+
+    test('completes a retried operation by merging its validated pull request', async () => {
+      nock(API)
+        .get(`${TENANTS}/pulls`)
+        .query(true)
+        .reply(200, [
+          pullRequest({
+            number: 19,
+            title: 'chore(infradev): write alpha',
+            body: `Submitted.\n\nOperation-Id: ${OPERATION}\n`,
+            html_url: 'https://github.com/DEFRA/ai-platform-tenants/pull/19'
+          })
+        ])
+      autoMergeRefused()
+      checkRuns([{ id: 5, status: 'completed', conclusion: 'success' }])
+      const merge = merged(19)
+
+      await expect(
+        submit(commandInput({ env: submission() }))
+      ).resolves.toMatchObject({ outcome: 'merged', number: 19 })
+      expect(merge.isDone()).toBe(true)
+    })
   })
 })
 

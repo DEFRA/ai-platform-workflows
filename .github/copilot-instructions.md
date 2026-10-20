@@ -1,6 +1,6 @@
 # ai-platform-workflows
 
-Reusable GitHub Actions workflows, composite actions, GitOps modules and scripts used by `ai-platform-infra`, `-environments`, `-tenants` and `-deployments`. Callers pin `@v1`, so a change here reaches all four repositories. Design: README and design B `#workflows`.
+Reusable GitHub Actions workflows, composite actions, GitOps modules and scripts used by `ai-platform-infra`, `-environments`, `-tenants` and `-deployments`. Callers pin a major tag (`@v1`), so every minor and patch release reaches all four repositories automatically; only a new major is a deliberate, reviewed move for them. Design: README and design B `#workflows`.
 
 ## Review first
 
@@ -8,7 +8,7 @@ Reusable GitHub Actions workflows, composite actions, GitOps modules and scripts
 - **Permissions and tokens.** `permissions: {}` at the top, then the least each job needs. Each job mints its own App token scoped to the repositories and permissions it needs. No secret is echoed, logged or written to a report or artifact. A reusable workflow declares `GITOPS_APP_PRIVATE_KEY` as a required secret and callers use `secrets: inherit`.
 - **Pinned and boring.** Actions by major tag from a vendor (`actions/*`, `hashicorp/*`, `azure/*`); no unreviewed third-party action. Terraform runs only from `scripts/apply.sh` (deployment) and `scripts/infra-checks.sh` (format, validate, test).
 - **Safeguards stay.** Superseded-commit guard, platform-before-tenants, re-validation at the pin, plan-guard, concurrency groups that never cancel an apply, the Entra purge and the run report. Weakening any of them needs a stated reason.
-- **Compatibility.** A change callers cannot take unchanged is a new major. `setup` fails fast against `compat.json` in `ai-platform-infra`, which names the oldest release of this repository an infra release works with.
+- **Versioning.** Callers pin a major, so the release type is a contract. A fix is a patch, a backwards-compatible feature a minor, and anything callers cannot take unchanged (an input, output, secret, permission or behaviour change) a new major (`feat!:` or a `BREAKING CHANGE` footer). Check the PR is classified honestly and was tested against what each caller passes today. `setup` fails fast against `compat.json` in `ai-platform-infra`, which names the oldest release of this repository an infra release works with.
 
 ## Conventions
 

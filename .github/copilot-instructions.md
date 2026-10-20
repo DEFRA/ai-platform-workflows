@@ -22,5 +22,5 @@ Reusable GitHub Actions workflows, composite actions, GitOps modules and scripts
 
 1. Branch `<type>/<description>`; conventional commits (`feat!:` or a `BREAKING CHANGE` footer for a breaking change).
 2. Run the checks above before pushing. Say which callers a change reaches and how you tested it.
-3. **Request Copilot review**: `gh pr edit <n> --add-reviewer "@copilot"`. Answer every comment, then request a human reviewer. Copilot is advisory and never replaces the required approval.
+3. **Request Copilot review**: `gh pr edit <n> --add-reviewer "@copilot"`. When it lands, fix every comment or reply with the reason it does not apply, push, then resolve each thread (GraphQL `resolveReviewThread`); re-request after a substantial push and repeat until nothing is unresolved. Then request a human reviewer. Copilot is advisory and never replaces the required approval.
 4. Do not merge your own PR or skip checks.

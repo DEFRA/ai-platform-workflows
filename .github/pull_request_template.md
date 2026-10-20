@@ -11,5 +11,5 @@
 
 ## Review
 
-- [ ] Copilot review requested (`gh pr edit <n> --add-reviewer "@copilot"`) and every comment answered
+- [ ] Copilot review requested (`gh pr edit <n> --add-reviewer "@copilot"`), every comment fixed or answered, every thread resolved
 - [ ] Human reviewer requested

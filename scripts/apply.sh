@@ -132,9 +132,12 @@ plan() {
   checks plan-guard "${guard[@]}"
 }
 
+# jq holds its output back when it is not a terminal, so without --unbuffered
+# the run log shows nothing until the apply is over; a long apply needs to be
+# watched as it runs.
 apply() {
   terraform -chdir="$root" apply -input=false -lock-timeout=15m -json tfplan |
-    tee apply.jsonl | jq -r '."@message"'
+    tee apply.jsonl | jq --unbuffered -r '."@message"'
 }
 
 # Entra keeps a deleted application or service principal for 30 days, and

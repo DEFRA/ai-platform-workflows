@@ -297,6 +297,17 @@ describe('apply.sh apply', () => {
     )
   })
 
+  test('streams the apply log as Terraform writes it, not when the apply is over', () => {
+    const script = readFileSync(
+      join(import.meta.dirname, '..', '..', '..', 'scripts', 'apply.sh'),
+      'utf8'
+    )
+
+    expect(script).toContain(
+      'tee apply.jsonl | jq --unbuffered -r \'."@message"\''
+    )
+  })
+
   test('fails when Terraform fails', () => {
     expect(run('apply', { AIP_TEST_FAIL: 'apply -input' }).status).toBe(1)
   })

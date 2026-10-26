@@ -178,8 +178,22 @@ describe('prepareValidation', () => {
       expect(jobSummary()).toContain('admin-1')
     })
 
+    test('keeps an approval that a later comment-only review did not withdraw', async () => {
+      changedFiles(TENANTS, files)
+      reviews(TENANTS, [
+        review('admin-1', 'APPROVED', HEAD),
+        review('admin-1', 'COMMENTED', HEAD)
+      ])
+
+      await expect(prepareValidation(input())).resolves.toMatchObject({
+        outcome: 'approved'
+      })
+      expect(jobSummary()).toContain('admin-1')
+    })
+
     test.each([
       ['has no review', []],
+      ['only has a comment', [review('a', 'COMMENTED', HEAD)]],
       [
         'was approved only before its head moved',
         [review('a', 'APPROVED', 'old')]
@@ -187,6 +201,10 @@ describe('prepareValidation', () => {
       [
         'had its approval withdrawn',
         [review('a', 'APPROVED', HEAD), review('a', 'CHANGES_REQUESTED', HEAD)]
+      ],
+      [
+        'had its approval dismissed',
+        [review('a', 'APPROVED', HEAD), review('a', 'DISMISSED', HEAD)]
       ]
     ])('fails closed when it %s', async (_why, list) => {
       changedFiles(TENANTS, files)

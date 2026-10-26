@@ -2,6 +2,11 @@ import { OutcomeError } from './outcome.js'
 
 const MAIN = 'aip-machine-main'
 const PROTECT = 'aip-machine-protect'
+const DEFAULT_BRANCH = '~DEFAULT_BRANCH'
+// The check aip-machine-main requires, from GitHub Actions (scripts/setup/
+// rulesets/machine-main.json holds the same pair).
+const VALIDATE_CONTEXT = 'validate-desired-state / validate'
+const GITHUB_ACTIONS_APP_ID = 15368
 // The Apps that run `submit`, and so the only actors allowed to bypass the
 // pull-request rule of aip-machine-main (design B `#rulesets`).
 const SUBMIT_APPS = [
@@ -35,7 +40,36 @@ function ruleOf(ruleset, type) {
   return ruleset.rules?.find((rule) => rule.type === type)
 }
 
+// Both rulesets guard the default branch and nothing else: a ruleset that also
+// names another branch, or excludes the default one, protects nothing.
+function checkScope(name, ruleset) {
+  const ref = ruleset.conditions?.ref_name
+  const defaultOnly =
+    ruleset.target === 'branch' &&
+    ref?.include?.length === 1 &&
+    ref.include[0] === DEFAULT_BRANCH &&
+    (ref.exclude ?? []).length === 0
+
+  if (!defaultOnly) {
+    throw changed(`${name} no longer applies to the default branch alone`)
+  }
+}
+
+function requiresValidation(ruleset) {
+  const checks =
+    ruleOf(ruleset, 'required_status_checks')?.parameters
+      ?.required_status_checks ?? []
+
+  return checks.some(
+    (check) =>
+      check.context === VALIDATE_CONTEXT &&
+      check.integration_id === GITHUB_ACTIONS_APP_ID
+  )
+}
+
 function checkMain(ruleset, appIds) {
+  checkScope(MAIN, ruleset)
+
   const bypass = ruleset.bypass_actors
 
   if (!Array.isArray(bypass)) {
@@ -74,12 +108,16 @@ function checkMain(ruleset, appIds) {
     )
   }
 
-  if (!ruleOf(ruleset, 'required_status_checks')) {
-    throw changed(`${MAIN} no longer requires a status check`)
+  if (!requiresValidation(ruleset)) {
+    throw changed(
+      `${MAIN} no longer requires a status check: ${VALIDATE_CONTEXT} from GitHub Actions`
+    )
   }
 }
 
 function checkProtect(ruleset) {
+  checkScope(PROTECT, ruleset)
+
   if (
     !Array.isArray(ruleset.bypass_actors) ||
     ruleset.bypass_actors.length > 0

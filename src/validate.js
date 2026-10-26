@@ -20,12 +20,19 @@ function changedEnvironments(files) {
   ]
 }
 
-// Reviewers whose latest review approves the head commit.
+// Reviewers whose latest approving or withdrawing review is an approval of the
+// head commit. A comment-only review changes no one's vote on GitHub, so it is
+// ignored (it does not withdraw an approval).
 function approversOf(reviews, headSha) {
   const latest = new Map()
 
   for (const review of reviews) {
-    if (review.commit_id === headSha && review.user) {
+    if (
+      review.commit_id === headSha &&
+      review.user &&
+      review.state !== 'COMMENTED' &&
+      review.state !== 'PENDING'
+    ) {
       latest.set(review.user.login, review.state)
     }
   }

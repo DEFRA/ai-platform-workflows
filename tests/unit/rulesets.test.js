@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import nock from 'nock'
 
 import { verifyRulesets } from '../../src/rulesets.js'
@@ -11,11 +14,20 @@ function summary(name, id, source = 'Repository') {
   return { id, name, source_type: source, enforcement: 'active' }
 }
 
+const MAIN_ONLY = {
+  ref_name: { include: ['~DEFAULT_BRANCH'], exclude: [] }
+}
+const VALIDATE_CHECK = {
+  context: 'validate-desired-state / validate',
+  integration_id: 15368
+}
+
 function machineMain(overrides = {}) {
   return {
     id: 1,
     name: 'aip-machine-main',
     target: 'branch',
+    conditions: MAIN_ONLY,
     source_type: 'Repository',
     enforcement: 'active',
     bypass_actors: [
@@ -33,7 +45,10 @@ function machineMain(overrides = {}) {
           require_code_owner_review: true
         }
       },
-      { type: 'required_status_checks', parameters: {} }
+      {
+        type: 'required_status_checks',
+        parameters: { required_status_checks: [VALIDATE_CHECK] }
+      }
     ],
     ...overrides
   }
@@ -44,6 +59,7 @@ function machineProtect(overrides = {}) {
     id: 2,
     name: 'aip-machine-protect',
     target: 'branch',
+    conditions: MAIN_ONLY,
     source_type: 'Repository',
     enforcement: 'active',
     bypass_actors: [],
@@ -257,6 +273,66 @@ describe('verifyRulesets', () => {
       },
       'no longer requires a status check'
     ],
+    ...[
+      ['an empty check list', []],
+      [
+        'an unrelated check',
+        [{ context: 'lint', integration_id: VALIDATE_CHECK.integration_id }]
+      ],
+      [
+        'the check from another integration',
+        [{ ...VALIDATE_CHECK, integration_id: 1 }]
+      ],
+      [
+        'a check that only contains the name',
+        [{ ...VALIDATE_CHECK, context: `${VALIDATE_CHECK.context}-other` }]
+      ]
+    ].map(([what, checks]) => [
+      'aip-machine-main',
+      what,
+      {
+        rules: [
+          {
+            type: 'pull_request',
+            parameters: {
+              required_approving_review_count: 1,
+              require_code_owner_review: true
+            }
+          },
+          {
+            type: 'required_status_checks',
+            parameters: { required_status_checks: checks }
+          }
+        ]
+      },
+      'no longer requires a status check'
+    ]),
+    ...['aip-machine-main', 'aip-machine-protect'].flatMap((name) =>
+      [
+        ['a branch other than the default', { include: ['refs/heads/dev'] }],
+        [
+          'the default branch and another',
+          { include: ['~DEFAULT_BRANCH', 'refs/heads/dev'] }
+        ],
+        ['an exclusion', { exclude: ['~DEFAULT_BRANCH'] }],
+        ['no conditions', undefined]
+      ].map(([what, change]) => [
+        name,
+        `its branch condition (${what})`,
+        {
+          conditions: change
+            ? { ref_name: { ...MAIN_ONLY.ref_name, ...change } }
+            : undefined
+        },
+        'no longer applies to the default branch alone'
+      ])
+    ),
+    [
+      'aip-machine-protect',
+      'its target',
+      { target: 'tag' },
+      'no longer applies to the default branch alone'
+    ],
     [
       'aip-machine-protect',
       'force-push protection',
@@ -280,6 +356,35 @@ describe('verifyRulesets', () => {
       outcome: 'rulesets-changed',
       message: expect.stringContaining(`${name} ${reason}`)
     })
+  })
+
+  test('accepts the rulesets exactly as scripts/setup/rulesets holds them', async () => {
+    const template = (name) =>
+      JSON.parse(
+        readFileSync(
+          join(import.meta.dirname, '../../scripts/setup/rulesets', name),
+          'utf8'
+        )
+      )
+    const live = (name, id, bypass) => ({
+      ...template(name),
+      id,
+      source_type: 'Repository',
+      bypass_actors: bypass
+    })
+
+    given({
+      main: live('machine-main.json', 1, [
+        {
+          actor_id: ORCHESTRATOR_ID,
+          actor_type: 'Integration',
+          bypass_mode: 'always'
+        }
+      ]),
+      protect: live('machine-protect.json', 2, [])
+    })
+
+    await expect(verify()).resolves.toBeUndefined()
   })
 
   test('works with an App that has not been installed under that slug', async () => {

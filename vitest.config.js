@@ -32,6 +32,7 @@ export default defineConfig({
         'src/main.js': floor,
         'src/pause.js': floor,
         'src/release.js': floor,
+        'src/resources.js': floor,
         'src/rulesets.js': floor,
         'src/submit.js': floor,
         'src/validate.js': floor

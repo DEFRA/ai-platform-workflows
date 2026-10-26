@@ -55,17 +55,25 @@ Every `submit`, apply and `pause.yml` run sends its status to the events queue a
 ([schema](https://github.com/DEFRA/ai-platform-infra/tree/main/schemas/messages)), one event per operation, so the
 Portal API follows the run without polling GitHub:
 
-| Run    | Events                                                                                                                                                                                                                                                                                                                                                             |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| submit | `requested` (adds the run to the operation), then `committed`, or `checks-failed` with a failure reason (`checks-failed`, or the retryable `stale-revision` or `paused`)                                                                                                                                                                                           |
-| apply  | `deploying` after the preflight and the pause check, then `deployed` or `deploy-failed` (with `failingTeams` and `attributable`), for each ID in the run report's `operations[].operationIds[]`; a commit with no operation ID is a `break-glass` event; a run with no operation is one event for the environment. A superseded, empty or cancelled run sends none |
-| pause  | `paused` or `resumed` for the environment                                                                                                                                                                                                                                                                                                                          |
+| Run    | Events                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| submit | `requested` (adds the run to the operation), then `committed`, or `checks-failed` with a failure reason (`checks-failed`, or the retryable `stale-revision` or `paused`)                                                                                                                                                                                                                                                                                            |
+| apply  | `deploying` after the preflight and the pause check, then `deployed` or `deploy-failed` (with `failingTeams` and `attributable`), for each ID in the run report's `operations[].operationIds[]`; a commit with no operation ID is a `break-glass` event (with the pull request that carried it) or, with none, an `apply` event about the commit; a run with no operation is one event about the commit it applied. A superseded, empty or cancelled run sends none |
+| pause  | `paused` or `resumed` for the environment                                                                                                                                                                                                                                                                                                                                                                                                                           |
+
+An apply event names the operation's team and its file, and the commit and when it was made (`committedAt`), which it
+reads from the commit with the job's `contents: read` token, because the run report holds only the commit. `deployed`
+carries `appliedSha` and `resources[]`, flattened from the team's entry in the run report's `outputs.teams.value` (empty
+for a removal). An event that cannot name those is not built, and the reconciler covers the gap. A test builds every
+status the workflows send through `build-event` and checks it with Ajv against a copy of the schema
+(`tests/fixtures/aip-gitops/event.schema.json`, byte-identical to infra's; set `AIP_INFRA_SCHEMAS` to a checkout's
+`schemas/messages` to prove it), so the two cannot drift unseen.
 
 The [`publish-event`](.github/actions/publish-event/action.yml) action first keeps each event in the run report's
 `events[]` (submit and `pause.yml` upload a report that holds only them), so an event that cannot be sent is still
 kept with the run. It then signs in with `azure/login` as the events identity (`AIP_EVENTS_CLIENT_ID`), gets a token
 for `AIP_EVENTS_AUDIENCE`, assumes `AIP_EVENTS_ROLE_ARN` and sends to `AIP_EVENTS_QUEUE_URL`, in the FIFO group of the
-operation (the commit for `break-glass`, the environment for `pause`) and deduplicated by the event ID. It is bounded
+operation (the commit for `break-glass` and for an apply no operation asked for, the environment for `pause`) and deduplicated by the event ID. It is bounded
 to 10 seconds with 2 retries and is `continue-on-error`: a deploy never fails on it. An event from a run that no
 operation asked for, sent while SQS is down for the whole run, may never reach the portal history; the run report and
 GitHub's run history still hold it (accepted gap, plan section 15).

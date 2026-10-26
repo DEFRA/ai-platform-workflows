@@ -2,8 +2,11 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 
 import { writeSummary } from './github.js'
+import { resourcesOf } from './resources.js'
 
 const EVENT_SCHEMA = 'aip.gitops.event/1'
+// From these on, an event says which commit it is about and when it was made.
+const COMMIT_STATUSES = new Set(['committed', 'deploying', 'deployed'])
 const STATUSES = new Set([
   'requested',
   'checks-failed',
@@ -98,13 +101,74 @@ function failureReason(status, failure, report) {
   }
 }
 
+// The commit an event is about. A run that applies a commit no operation
+// names (a manual apply, reconcile-all) is about the commit it applied.
+function commitShaOf({ commit, operationId }, facts, report) {
+  if (commit) {
+    return commit.sha
+  }
+
+  if (facts.source === 'apply' && !operationId) {
+    return report?.appliedSha
+  }
+
+  return facts.commitSha || undefined
+}
+
+// The one team file an operation's commit changed in the environment. An
+// apply learns it from the commit, because the report names only the commit.
+function teamFileOf(environment, files = []) {
+  const prefix = `environments/${environment}/`
+  const found = files.filter(
+    (file) =>
+      file.startsWith(prefix) &&
+      file.endsWith('.json') &&
+      !file.slice(prefix.length).includes('/')
+  )
+
+  return found.length === 1 ? found[0] : null
+}
+
 function eventFor(unit, status, facts, extras) {
-  const { commit, operationId, breakGlass } = unit
-  const commitSha = commit?.sha ?? facts.commitSha
-  const groupId = operationId ?? (breakGlass ? commitSha : facts.environment)
+  const { commit, operationId } = unit
+  const commitSha = commitShaOf(unit, facts, extras.report)
+  const known = extras.commits[commitSha] ?? {}
+  const committedAt =
+    known.committedAt ??
+    (commitSha === facts.commitSha ? facts.committedAt : undefined)
+  // A break-glass event names the pull request that carried the commit; a
+  // manual commit with none is reported as the apply it is.
+  const pullRequestUrl = unit.breakGlass
+    ? extras.pullRequests?.[commitSha]
+    : null
+  const breakGlass = Boolean(unit.breakGlass && pullRequestUrl)
+  const path = operationId
+    ? facts.path || teamFileOf(facts.environment, known.files)
+    : null
+
+  if (operationId && !path) {
+    throw new Error(`cannot name the team file of operation ${operationId}`)
+  }
+
+  const needsCommit = COMMIT_STATUSES.has(status) || breakGlass
+
+  if (needsCommit && !(commitSha && committedAt)) {
+    throw new Error(
+      `cannot say when the commit of ${operationId ?? facts.environment} was made`
+    )
+  }
+
+  if (status === 'deployed' && !extras.report?.appliedSha) {
+    throw new Error('the run report has no appliedSha for the deployed event')
+  }
+
+  const groupId =
+    operationId ??
+    (facts.source === 'apply' && commitSha ? commitSha : facts.environment)
   const eventId = `${groupId}:${status}:${facts.runId}:${facts.runAttempt}`
   const reason = failureReason(status, extras.failure, extras.report)
   const failed = status === 'deploy-failed'
+  const team = path ? basename(path, '.json') : null
 
   return {
     groupId,
@@ -113,8 +177,8 @@ function eventFor(unit, status, facts, extras) {
       schema: EVENT_SCHEMA,
       eventId,
       environment: facts.environment,
-      team: facts.team ?? (facts.path ? basename(facts.path, '.json') : null),
-      path: facts.path || null,
+      team,
+      path,
       action: breakGlass ? 'break-glass' : facts.action,
       status,
       timestamp: extras.now.toISOString(),
@@ -127,18 +191,13 @@ function eventFor(unit, status, facts, extras) {
       runId: facts.runId,
       runAttempt: facts.runAttempt,
       runUrl: facts.runUrl,
-      ...(commitSha && { commitSha }),
-      ...(facts.committedAt &&
-        status === 'committed' && {
-          committedAt: facts.committedAt
-        }),
-      ...(breakGlass && {
-        pullRequestUrl: extras.pullRequests?.[commitSha] ?? null
-      }),
+      // The commit and its time travel together (a schema rule).
+      ...(commitSha && committedAt && { commitSha, committedAt }),
+      ...(breakGlass && { pullRequestUrl }),
       ...(reason && { failureReason: reason }),
       ...(status === 'deployed' && {
-        appliedSha: extras.report?.appliedSha,
-        resources: []
+        appliedSha: extras.report.appliedSha,
+        resources: resourcesOf(extras.report, team)
       }),
       ...(failed && {
         failingTeams: extras.report?.failingTeams ?? [],
@@ -164,6 +223,9 @@ function eventFor(unit, status, facts, extras) {
  * @param {object} input.facts - The run and its environment.
  * @param {Record<string, string>} [input.pullRequests] - Pull request URL
  *   by break-glass commit.
+ * @param {Record<string, {committedAt: string, files: string[]}>} [input.commits]
+ *   - What GitHub says of each commit an apply names: when it was made and
+ *   the files it changed, which give the team file of an operation.
  * @param {Date} [input.now] - The time stamped on the events.
  * @returns {Array<{groupId: string, deduplicationId: string, body: object}>}
  */
@@ -174,6 +236,7 @@ function buildEvents({
   failure = null,
   facts,
   pullRequests = {},
+  commits = {},
   now = new Date()
 }) {
   if (!STATUSES.has(status)) {
@@ -181,7 +244,13 @@ function buildEvents({
   }
 
   return unitsOf(ids, report).map((unit) =>
-    eventFor(unit, status, facts, { failure, report, pullRequests, now })
+    eventFor(unit, status, facts, {
+      failure,
+      report,
+      pullRequests,
+      commits,
+      now
+    })
   )
 }
 
@@ -242,6 +311,34 @@ async function pullRequestsOf(github, repo, report) {
   return found
 }
 
+// The time and the files of each commit an apply names, which the run report
+// does not hold: the team file tells whose operation it was, the time is the
+// `committedAt` the schema requires from `committed` onwards. A commit that
+// cannot be read fails the build, so nothing invalid is sent.
+async function commitsOf(github, repo, ids, report, facts) {
+  if (facts.source !== 'apply') {
+    return {}
+  }
+
+  const shas = new Set(
+    unitsOf(ids, report)
+      .map((unit) => commitShaOf(unit, facts, report))
+      .filter(Boolean)
+  )
+  const found = {}
+
+  for (const sha of shas) {
+    const { data } = await github.rest.repos.getCommit({ ...repo, ref: sha })
+
+    found[sha] = {
+      committedAt: data.commit.committer.date,
+      files: (data.files ?? []).map((file) => file.filename)
+    }
+  }
+
+  return found
+}
+
 function factsOf(context, env) {
   const { owner, repo } = context.repo
   const source = env.AIP_EVENT_SOURCE
@@ -294,6 +391,7 @@ async function buildEvent({ github, context, core, env }) {
   try {
     const report = readReport(env.AIP_EVENT_REPORT)
     const ids = idsOf(env.AIP_EVENT_OPERATION_IDS)
+    const facts = factsOf(context, env)
     const events = buildEvents({
       status: env.AIP_EVENT_STATUS,
       ids,
@@ -302,7 +400,8 @@ async function buildEvent({ github, context, core, env }) {
         code: env.AIP_EVENT_FAILURE_CODE,
         message: env.AIP_EVENT_FAILURE_MESSAGE
       },
-      facts: factsOf(context, env),
+      facts,
+      commits: await commitsOf(github, context.repo, ids, report, facts),
       pullRequests: await pullRequestsOf(
         github,
         context.repo,

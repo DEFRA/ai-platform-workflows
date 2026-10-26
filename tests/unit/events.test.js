@@ -16,20 +16,32 @@ import {
   jobSummary,
   OWNER
 } from '../helpers/github.js'
-import { validate } from '../helpers/json-schema.js'
+import { eventProblems } from '../helpers/event-schema.js'
 
-const SCHEMA = JSON.parse(
-  readFileSync(
-    join(import.meta.dirname, '../fixtures/aip-gitops/event.schema.json'),
-    'utf8'
-  )
-)
 const TENANTS = `/repos/${OWNER}/ai-platform-tenants`
 const COMMIT = 'd'.repeat(40)
 const OTHER_COMMIT = 'e'.repeat(40)
 const PERSON = 'entra:0f8fad5b-d9cb-469f-a165-70867728950e'
 const TRACE = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01'
 const NOW = new Date('2026-10-26T13:00:00.000Z')
+const MADE = '2026-10-26T12:59:58Z'
+// What GitHub says of the commits an apply names (commitsOf).
+const COMMITS = {
+  [COMMIT]: { committedAt: MADE, files: ['environments/infradev/alpha.json'] },
+  [OTHER_COMMIT]: {
+    committedAt: MADE,
+    files: ['environments/infradev/bravo.json']
+  }
+}
+const ARM = '/subscriptions/0/resourceGroups/rg/providers'
+const ALPHA_OUTPUTS = {
+  project: { id: `${ARM}/Microsoft.CognitiveServices/p`, name: 'aip-alpha' },
+  deployments: {
+    nano: { id: `${ARM}/Microsoft.CognitiveServices/d`, name: 'alpha-nano' }
+  },
+  api: { id: `${ARM}/Microsoft.ApiManagement/a`, name: 'alpha' },
+  registration: { object_id: 'obj-1', service_principal_object_id: 'obj-2' }
+}
 
 const RUN = {
   repository: 'DEFRA/ai-platform-tenants',
@@ -70,13 +82,14 @@ function report(overrides = {}) {
     operations: [{ sha: COMMIT, operationIds: ['op-00000001', 'op-00000002'] }],
     failingTeams: [],
     unattributedFailure: false,
+    outputs: { teams: { value: { alpha: ALPHA_OUTPUTS } } },
     ...overrides
   }
 }
 
 function valid(events) {
   for (const event of events) {
-    expect(validate(SCHEMA, event.body)).toEqual([])
+    expect(eventProblems(event.body)).toEqual([])
   }
 }
 
@@ -199,6 +212,7 @@ describe('buildEvents', () => {
       status: 'deployed',
       report: report(),
       facts: applyFacts(),
+      commits: COMMITS,
       now: NOW
     })
 
@@ -211,15 +225,119 @@ describe('buildEvents', () => {
       action: 'apply',
       source: 'apply',
       operationId: 'op-00000001',
-      team: null,
-      path: null,
+      team: 'alpha',
+      path: 'environments/infradev/alpha.json',
       commitSha: COMMIT,
+      committedAt: MADE,
       appliedSha: COMMIT,
-      resources: [],
       requestedBy: 'app:ai-platform-orchestrator'
     })
     expect(events[1].body.eventId).toBe('op-00000002:deployed:4242:2')
     valid(events)
+  })
+
+  test('deployed: carries what the apply published for the team', () => {
+    const [event] = buildEvents({
+      status: 'deployed',
+      report: report({
+        operations: [{ sha: COMMIT, operationIds: ['op-00000001'] }]
+      }),
+      facts: applyFacts(),
+      commits: COMMITS,
+      now: NOW
+    })
+
+    expect(event.body.resources).toEqual([
+      {
+        type: 'azapi_resource.foundry_project',
+        name: 'aip-alpha',
+        id: ALPHA_OUTPUTS.project.id
+      },
+      {
+        type: 'azurerm_cognitive_deployment',
+        name: 'alpha-nano',
+        id: ALPHA_OUTPUTS.deployments.nano.id
+      },
+      {
+        type: 'azurerm_api_management_api',
+        name: 'alpha',
+        id: ALPHA_OUTPUTS.api.id
+      },
+      { type: 'azuread_application', name: 'alpha', id: 'obj-1' },
+      { type: 'azuread_service_principal', name: 'alpha', id: 'obj-2' }
+    ])
+    valid([event])
+  })
+
+  test('deployed: a removal, with no outputs for the team, has no resources', () => {
+    const [event] = buildEvents({
+      status: 'deployed',
+      report: report({
+        operations: [{ sha: COMMIT, operationIds: ['op-00000001'] }],
+        outputs: { teams: { value: {} } }
+      }),
+      facts: applyFacts(),
+      commits: COMMITS,
+      now: NOW
+    })
+
+    expect(event.body.resources).toEqual([])
+    valid([event])
+  })
+
+  test.each([
+    [
+      'an operation whose commit changed no team file',
+      { [COMMIT]: { committedAt: MADE, files: ['README.md'] } },
+      'cannot name the team file of operation op-00000001'
+    ],
+    [
+      'an operation whose commit changed two team files',
+      {
+        [COMMIT]: {
+          committedAt: MADE,
+          files: [
+            'environments/infradev/alpha.json',
+            'environments/infradev/bravo.json'
+          ]
+        }
+      },
+      'cannot name the team file of operation op-00000001'
+    ],
+    [
+      'an operation whose commit has no known time',
+      { [COMMIT]: { files: ['environments/infradev/alpha.json'] } },
+      'cannot say when the commit of op-00000001 was made'
+    ],
+    [
+      'an operation whose commit is unknown',
+      {},
+      'cannot name the team file of operation op-00000001'
+    ]
+  ])('refuses to build %s', (_why, commits, message) => {
+    expect(() =>
+      buildEvents({
+        status: 'deploying',
+        report: report({
+          operations: [{ sha: COMMIT, operationIds: ['op-00000001'] }]
+        }),
+        facts: applyFacts(),
+        commits,
+        now: NOW
+      })
+    ).toThrow(message)
+  })
+
+  test('refuses a deployed event for a report with no applied commit', () => {
+    expect(() =>
+      buildEvents({
+        status: 'deployed',
+        report: report({ appliedSha: undefined }),
+        facts: applyFacts(),
+        commits: COMMITS,
+        now: NOW
+      })
+    ).toThrow('the run report has no appliedSha for the deployed event')
   })
 
   test('deploying: sends the trace of the commit that carried it', () => {
@@ -231,11 +349,13 @@ describe('buildEvents', () => {
         ]
       }),
       facts: applyFacts(),
+      commits: COMMITS,
       now: NOW
     })
 
     expect(event.body.traceparent).toBe(TRACE)
     expect(event.body).not.toHaveProperty('appliedSha')
+    expect(event.body).not.toHaveProperty('resources')
     valid([event])
   })
 
@@ -248,6 +368,7 @@ describe('buildEvents', () => {
         unattributedFailure: false
       }),
       facts: applyFacts(),
+      commits: COMMITS,
       now: NOW
     })
 
@@ -274,18 +395,22 @@ describe('buildEvents', () => {
       }),
       ids: ['op-00000001'],
       facts: applyFacts(),
+      commits: COMMITS,
       now: NOW
     })
 
     expect(event.body).toMatchObject({ failingTeams: [], attributable: false })
+    valid([event])
   })
 
   test('deploy-failed for a paused environment is retryable', () => {
     const [event] = buildEvents({
       status: 'deploy-failed',
+      report: report({ outcome: 'pending' }),
       ids: ['op-00000001'],
       failure: { code: 'paused', message: 'The environment is paused.' },
       facts: applyFacts(),
+      commits: COMMITS,
       now: NOW
     })
 
@@ -309,6 +434,7 @@ describe('buildEvents', () => {
       }),
       facts: applyFacts(),
       pullRequests: { [OTHER_COMMIT]: 'https://github.com/DEFRA/x/pull/9' },
+      commits: COMMITS,
       now: NOW
     })
 
@@ -320,40 +446,72 @@ describe('buildEvents', () => {
     expect(events[0].body).toMatchObject({
       action: 'break-glass',
       operationId: null,
+      team: null,
+      path: null,
       commitSha: OTHER_COMMIT,
+      committedAt: MADE,
       pullRequestUrl: 'https://github.com/DEFRA/x/pull/9'
     })
     expect(events[1].body.action).toBe('apply')
     valid(events)
   })
 
-  test('a break-glass change with no pull request has a null link', () => {
+  test('a manual commit with no pull request is reported as the apply it is', () => {
     const [event] = buildEvents({
       status: 'deploying',
       report: report({ operations: [{ sha: OTHER_COMMIT, operationIds: [] }] }),
       facts: applyFacts(),
+      commits: COMMITS,
       now: NOW
     })
 
-    expect(event.body.pullRequestUrl).toBeNull()
+    expect(event.groupId).toBe(OTHER_COMMIT)
+    expect(event.body).toMatchObject({
+      action: 'apply',
+      operationId: null,
+      commitSha: OTHER_COMMIT
+    })
+    expect(event.body).not.toHaveProperty('pullRequestUrl')
     valid([event])
   })
 
-  test('a run with nothing new to apply is one event with no operation, grouped by environment', () => {
+  test('a run with nothing new to apply is one event with no operation, about the commit it applied', () => {
     const events = buildEvents({
       status: 'deployed',
       report: report({ operations: [] }),
       facts: applyFacts(),
+      commits: COMMITS,
       now: NOW
     })
 
     expect(events).toHaveLength(1)
     expect(events[0]).toMatchObject({
-      groupId: 'infradev',
-      deduplicationId: 'infradev:deployed:4242:2'
+      groupId: COMMIT,
+      deduplicationId: `${COMMIT}:deployed:4242:2`
     })
-    expect(events[0].body.operationId).toBeNull()
+    expect(events[0].body).toMatchObject({
+      operationId: null,
+      team: null,
+      path: null,
+      commitSha: COMMIT,
+      committedAt: MADE,
+      resources: []
+    })
     valid(events)
+  })
+
+  test('a failed apply with no report is about the environment alone', () => {
+    const [event] = buildEvents({
+      status: 'deploy-failed',
+      failure: { code: 'paused', message: 'Paused.' },
+      facts: applyFacts(),
+      now: NOW
+    })
+
+    expect(event.groupId).toBe('infradev')
+    expect(event.body).not.toHaveProperty('commitSha')
+    expect(event.body).not.toHaveProperty('committedAt')
+    valid([event])
   })
 
   test('pause: paused and resumed are about the environment, not an operation', () => {
@@ -398,12 +556,27 @@ describe('buildEvents', () => {
     const events = buildEvents({
       status: 'requested',
       ids: ['op-00000001', 'op-00000002'],
-      facts: submitFacts({ path: '', team: 'alpha' }),
+      facts: submitFacts(),
       now: NOW
     })
 
     expect(events).toHaveLength(2)
-    expect(events[0].body).toMatchObject({ path: null, team: 'alpha' })
+    expect(events[0].body).toMatchObject({
+      path: 'environments/infradev/alpha.json',
+      team: 'alpha'
+    })
+    valid(events)
+  })
+
+  test('refuses a submit event that names no file', () => {
+    expect(() =>
+      buildEvents({
+        status: 'requested',
+        ids: ['op-00000001'],
+        facts: submitFacts({ path: '' }),
+        now: NOW
+      })
+    ).toThrow('cannot name the team file of operation op-00000001')
   })
 })
 
@@ -456,15 +629,15 @@ describe('recordEvents', () => {
   test('adds to the events a run report already holds, once per event ID', () => {
     const file = join(process.env.RUNNER_TEMP, 'old-report.json')
     const first = buildEvents({
-      status: 'deploying',
+      status: 'requested',
       ids: ['op-00000001'],
-      facts: applyFacts(),
+      facts: submitFacts(),
       now: NOW
     })
     const second = buildEvents({
-      status: 'deployed',
+      status: 'committed',
       ids: ['op-00000001'],
-      facts: applyFacts(),
+      facts: submitFacts({ commitSha: COMMIT, committedAt: MADE }),
       now: NOW
     })
     writeFileSync(file, JSON.stringify({ outcome: 'success' }))
@@ -475,8 +648,8 @@ describe('recordEvents', () => {
     const kept = JSON.parse(readFileSync(file, 'utf8'))
     expect(kept.outcome).toBe('success')
     expect(kept.events.map((event) => event.status)).toEqual([
-      'deploying',
-      'deployed'
+      'requested',
+      'committed'
     ])
   })
 })
@@ -503,6 +676,27 @@ describe('buildEvent', () => {
 
   const BY_APP = { actor: 'ai-platform-orchestrator[bot]' }
 
+  // GitHub's answer for a commit of the state repository.
+  function commitReply(sha, files = ['environments/infradev/alpha.json']) {
+    return nock(API)
+      .get(`${TENANTS}/commits/${sha}`)
+      .reply(200, {
+        sha,
+        commit: { committer: { date: MADE } },
+        files: files.map((filename) => ({ filename }))
+      })
+  }
+
+  function applyEnv(file, overrides = {}) {
+    return env({
+      AIP_EVENT_STATUS: 'deployed',
+      AIP_EVENT_SOURCE: 'apply',
+      AIP_EVENT_OPERATION_IDS: '',
+      AIP_EVENT_REPORT: file,
+      ...overrides
+    })
+  }
+
   test('keeps the event in the run report first, then writes what to send', async () => {
     vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
 
@@ -526,21 +720,13 @@ describe('buildEvent', () => {
     valid(sent)
   })
 
-  test('reads the operations of an apply from its run report', async () => {
+  test('reads the operations of an apply from its run report, and the team and time from the commit', async () => {
     vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
     const file = join(process.env.RUNNER_TEMP, 'apply-report.json')
     writeFileSync(file, JSON.stringify(report()))
+    commitReply(COMMIT)
 
-    const result = await buildEvent(
-      commandInput({
-        env: env({
-          AIP_EVENT_STATUS: 'deployed',
-          AIP_EVENT_SOURCE: 'apply',
-          AIP_EVENT_OPERATION_IDS: '',
-          AIP_EVENT_REPORT: file
-        })
-      })
-    )
+    const result = await buildEvent(commandInput({ env: applyEnv(file) }))
 
     expect(result).toEqual({ events: 2 })
     const kept = JSON.parse(readFileSync(file, 'utf8'))
@@ -548,7 +734,41 @@ describe('buildEvent', () => {
       'op-00000001',
       'op-00000002'
     ])
+    expect(kept.events[0]).toMatchObject({
+      team: 'alpha',
+      path: 'environments/infradev/alpha.json',
+      commitSha: COMMIT,
+      committedAt: MADE
+    })
+    expect(kept.events[0].resources).toHaveLength(5)
     expect(kept.outcome).toBe('success')
+    valid(kept.events.map((body) => ({ body })))
+  })
+
+  test('sends nothing, and never fails, when GitHub cannot say what a commit changed', async () => {
+    vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
+    const file = join(process.env.RUNNER_TEMP, 'apply-404-report.json')
+    writeFileSync(file, JSON.stringify(report()))
+    nock(API).get(`${TENANTS}/commits/${COMMIT}`).reply(404)
+
+    await expect(
+      buildEvent(commandInput({ env: applyEnv(file) }))
+    ).resolves.toEqual({ events: 0 })
+    expect(exportedVariables().AIP_EVENT_FILE).toBe('')
+    expect(JSON.parse(readFileSync(file, 'utf8'))).not.toHaveProperty('events')
+  })
+
+  test('takes a commit with no listed files as one that changed no team file', async () => {
+    vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
+    const file = join(process.env.RUNNER_TEMP, 'apply-nofiles-report.json')
+    writeFileSync(file, JSON.stringify(report()))
+    nock(API)
+      .get(`${TENANTS}/commits/${COMMIT}`)
+      .reply(200, { sha: COMMIT, commit: { committer: { date: MADE } } })
+
+    await expect(
+      buildEvent(commandInput({ env: applyEnv(file) }))
+    ).resolves.toEqual({ events: 0 })
   })
 
   test('looks up the pull request of a break-glass commit', async () => {
@@ -560,52 +780,46 @@ describe('buildEvent', () => {
         report({ operations: [{ sha: OTHER_COMMIT, operationIds: [] }] })
       )
     )
+    commitReply(OTHER_COMMIT)
     nock(API)
       .get(`${TENANTS}/commits/${OTHER_COMMIT}/pulls`)
       .reply(200, [{ html_url: 'https://github.com/DEFRA/x/pull/9' }])
 
-    await buildEvent(
-      commandInput({
-        env: env({
-          AIP_EVENT_STATUS: 'deployed',
-          AIP_EVENT_SOURCE: 'apply',
-          AIP_EVENT_OPERATION_IDS: '',
-          AIP_EVENT_REPORT: file
-        })
-      })
-    )
+    await buildEvent(commandInput({ env: applyEnv(file) }))
 
-    expect(
-      JSON.parse(readFileSync(file, 'utf8')).events[0].pullRequestUrl
-    ).toBe('https://github.com/DEFRA/x/pull/9')
+    const [event] = JSON.parse(readFileSync(file, 'utf8')).events
+    expect(event).toMatchObject({
+      action: 'break-glass',
+      pullRequestUrl: 'https://github.com/DEFRA/x/pull/9'
+    })
+    valid([{ body: event }])
   })
 
-  test('sends a break-glass event with no link when the lookup fails', async () => {
-    vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
-    const file = join(process.env.RUNNER_TEMP, 'bg2-report.json')
-    writeFileSync(
-      file,
-      JSON.stringify(
-        report({ operations: [{ sha: OTHER_COMMIT, operationIds: [] }] })
+  test.each([
+    ['the lookup fails', (scope) => scope.reply(500)],
+    ['the commit has no pull request', (scope) => scope.reply(200, [])]
+  ])(
+    'sends a manual commit as an apply, with no link, when %s',
+    async (_why, answer) => {
+      vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
+      const file = join(process.env.RUNNER_TEMP, 'bg2-report.json')
+      writeFileSync(
+        file,
+        JSON.stringify(
+          report({ operations: [{ sha: OTHER_COMMIT, operationIds: [] }] })
+        )
       )
-    )
-    nock(API).get(`${TENANTS}/commits/${OTHER_COMMIT}/pulls`).reply(500)
+      commitReply(OTHER_COMMIT)
+      answer(nock(API).get(`${TENANTS}/commits/${OTHER_COMMIT}/pulls`))
 
-    await buildEvent(
-      commandInput({
-        env: env({
-          AIP_EVENT_STATUS: 'deployed',
-          AIP_EVENT_SOURCE: 'apply',
-          AIP_EVENT_OPERATION_IDS: '',
-          AIP_EVENT_REPORT: file
-        })
-      })
-    )
+      await buildEvent(commandInput({ env: applyEnv(file) }))
 
-    expect(
-      JSON.parse(readFileSync(file, 'utf8')).events[0].pullRequestUrl
-    ).toBeNull()
-  })
+      const [event] = JSON.parse(readFileSync(file, 'utf8')).events
+      expect(event).toMatchObject({ action: 'apply', operationId: null })
+      expect(event).not.toHaveProperty('pullRequestUrl')
+      valid([{ body: event }])
+    }
+  )
 
   test('names a person who ran pause.yml by their user ID', async () => {
     vi.stubEnv('GITHUB_ACTOR', 'someone')
@@ -760,31 +974,4 @@ describe('buildEvent', () => {
       expect(exportedVariables().AIP_EVENT_FILE).toBe('')
     }
   )
-
-  test('sends a break-glass event with no link when the commit has no pull request', async () => {
-    vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
-    const file = join(process.env.RUNNER_TEMP, 'bg3-report.json')
-    writeFileSync(
-      file,
-      JSON.stringify(
-        report({ operations: [{ sha: OTHER_COMMIT, operationIds: [] }] })
-      )
-    )
-    nock(API).get(`${TENANTS}/commits/${OTHER_COMMIT}/pulls`).reply(200, [])
-
-    await buildEvent(
-      commandInput({
-        env: env({
-          AIP_EVENT_STATUS: 'deployed',
-          AIP_EVENT_SOURCE: 'apply',
-          AIP_EVENT_OPERATION_IDS: '',
-          AIP_EVENT_REPORT: file
-        })
-      })
-    )
-
-    expect(
-      JSON.parse(readFileSync(file, 'utf8')).events[0].pullRequestUrl
-    ).toBeNull()
-  })
 })

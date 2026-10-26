@@ -274,16 +274,24 @@ ensure_paused_variable() {
 }
 
 verify_environment() {
-  local repo="$1" name="$2" admins branches
+  local repo="$1" name="$2" environment admins branches
 
-  admins="$(read_api "repos/$owner/$repo/environments/$name" --jq '.can_admins_bypass' 2> /dev/null || echo missing)"
-  if [[ "$admins" == missing ]]; then
+  environment="$(read_api "repos/$owner/$repo/environments/$name" 2> /dev/null || echo missing)"
+  if [[ "$environment" == missing ]]; then
     differs "$repo" "Environment $name is missing"
     return 0
   fi
 
+  admins="$(jq -r '.can_admins_bypass' <<< "$environment")"
   if [[ "$admins" != false ]]; then
     differs "$repo" "Environment $name lets administrators bypass its protection"
+  fi
+
+  # The policy list only counts when the Environment enforces it: custom
+  # branch policies on, and not the protected-branches or unrestricted mode.
+  if ! jq -e '.deployment_branch_policy.custom_branch_policies == true
+      and .deployment_branch_policy.protected_branches == false' <<< "$environment" > /dev/null; then
+    differs "$repo" "Environment $name does not enforce its custom branch policies (it is unrestricted or limited to protected branches)"
   fi
 
   branches="$(read_api "repos/$owner/$repo/environments/$name/deployment-branch-policies" \

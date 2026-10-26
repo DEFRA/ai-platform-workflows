@@ -2,6 +2,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { runScripts } from '../helpers/run-scripts.js'
 const ROOT = join(import.meta.dirname, '../..')
 const WORKFLOWS = join(ROOT, '.github/workflows')
 const ACTIONS = join(ROOT, '.github/actions')
@@ -40,16 +41,48 @@ describe('every workflow and action', () => {
   test.each(everyFile())(
     '%s never puts an expression in a run script (injection)',
     (file) => {
-      const lines = read(file).split('\n')
-      const scripts = lines.filter((line, index) => {
-        const inBlock = /^\s+run: [|>]/.test(lines[index - 1] ?? '')
+      const scripts = runScripts(read(file))
 
-        return /^\s+(- )?run: /.test(line) || inBlock
-      })
-
-      expect(scripts.filter((line) => line.includes('${{'))).toEqual([])
+      expect(scripts.filter((script) => script.includes('${{'))).toEqual([])
     }
   )
+
+  test('finds the whole of a run script, in every form, so an expression on a later line is caught', () => {
+    const yaml = [
+      'steps:',
+      '  - run: echo ${{ inputs.a }}',
+      '  - run: |',
+      '      echo safe',
+      '      echo ${{ inputs.b }}',
+      '    name: after',
+      '  - name: keyed',
+      '    run: >-',
+      '      echo safe',
+      '',
+      '      echo ${{ inputs.c }}',
+      '    env:',
+      '      X: ${{ inputs.d }}',
+      '  - name: plain',
+      '    run: bash "$AIP_SCRIPTS/apply.sh" plan',
+      '  - run: |+',
+      '      echo ${{ inputs.e }}'
+    ].join('\n')
+
+    expect(runScripts(yaml)).toEqual([
+      'echo ${{ inputs.a }}',
+      'echo safe\necho ${{ inputs.b }}',
+      'echo safe\n\necho ${{ inputs.c }}',
+      'bash "$AIP_SCRIPTS/apply.sh" plan',
+      'echo ${{ inputs.e }}'
+    ])
+  })
+
+  test('does not take a step env value for a script', () => {
+    const yaml =
+      '  - run: |\n      echo ok\n    env:\n      X: ${{ inputs.d }}\n'
+
+    expect(runScripts(yaml).join('')).not.toContain('${{')
+  })
 
   test('the actions a workflow here calls exist', () => {
     const wanted = new Set()

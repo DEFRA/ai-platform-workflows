@@ -510,6 +510,18 @@ describe('the assertion on bypass actors', () => {
 })
 
 describe('--verify', () => {
+  // An Environment as GitHub returns it when the script has set it.
+  function environmentBody(overrides = {}) {
+    return JSON.stringify({
+      can_admins_bypass: false,
+      deployment_branch_policy: {
+        protected_branches: false,
+        custom_branch_policies: true
+      },
+      ...overrides
+    })
+  }
+
   // The live state of a machine repository exactly as the script sets it.
   function liveMatches(skip = [], repo = TENANTS, environments = ['infradev']) {
     const prefix = `gh-fixtures/repos_DEFRA_${repo}`
@@ -541,10 +553,7 @@ describe('--verify', () => {
 
     for (const environment of environments) {
       for (const name of [environment, `${environment}-events`]) {
-        put(
-          `${prefix}_environments_${name}.json`,
-          '{"can_admins_bypass":false}'
-        )
+        put(`${prefix}_environments_${name}.json`, environmentBody())
         put(
           `${prefix}_environments_${name}_deployment-branch-policies.json`,
           '{"branch_policies":[{"id":1,"name":"main","type":"branch"}]}'
@@ -771,8 +780,25 @@ describe('--verify', () => {
     [
       'an Environment lets administrators bypass',
       'environments_infradev-events',
-      '{"can_admins_bypass":true}',
+      environmentBody({ can_admins_bypass: true }),
       'Environment infradev-events lets administrators bypass its protection'
+    ],
+    [
+      'an Environment keeps its main policy but is unrestricted',
+      'environments_infradev',
+      environmentBody({ deployment_branch_policy: null }),
+      'Environment infradev does not enforce its custom branch policies'
+    ],
+    [
+      'an Environment keeps its main policy but is limited to protected branches',
+      'environments_infradev-events',
+      environmentBody({
+        deployment_branch_policy: {
+          protected_branches: true,
+          custom_branch_policies: false
+        }
+      }),
+      'Environment infradev-events does not enforce its custom branch policies'
     ],
     [
       'an Environment allows another branch',
@@ -829,7 +855,7 @@ describe('--verify', () => {
     liveMatches()
     workspace.write(
       'gh-fixtures/repos_DEFRA_ai-platform-tenants_environments_infradev.json',
-      '{"can_admins_bypass":true}'
+      environmentBody({ can_admins_bypass: true })
     )
     workspace.write(
       'gh-fixtures/orgs_DEFRA_teams_aice-platform-admins_repos_DEFRA_ai-platform-tenants.json',

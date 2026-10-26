@@ -79,6 +79,21 @@ describe('adminCheck', () => {
     ).resolves.toMatchObject({ outcome: 'exempt-app' })
   })
 
+  test('lets an engineer re-run the failed apply of an App-started run too (DD21, AC18); the hand write, pause and break-glass inputs stay admin-only', async () => {
+    await expect(
+      check({ scope: 'apply', actor: APP, triggering: 'someone' })
+    ).resolves.toMatchObject({ outcome: 'exempt-app' })
+
+    await expect(
+      check({
+        scope: 'apply',
+        actor: APP,
+        triggering: 'someone',
+        env: { AIP_BREAK_GLASS_INPUTS: 'true' }
+      })
+    ).rejects.toMatchObject({ outcome: 'not-admin' })
+  })
+
   test('refuses github-actions[bot] without asking GitHub', async () => {
     await expect(check({ actor: 'github-actions[bot]' })).rejects.toMatchObject(
       {

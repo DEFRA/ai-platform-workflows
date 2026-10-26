@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import nock from 'nock'
+import { Octokit } from '@octokit/rest'
 
 import {
   buildEvent,
@@ -383,6 +384,56 @@ describe('buildEvents', () => {
     })
     expect(events[0].body).not.toHaveProperty('resources')
     valid(events)
+  })
+
+  test('deploy-failed: only the operation of a failing team is attributable', () => {
+    const events = buildEvents({
+      status: 'deploy-failed',
+      report: report({
+        outcome: 'failure',
+        operations: [
+          { sha: COMMIT, operationIds: ['op-00000001'] },
+          { sha: OTHER_COMMIT, operationIds: ['op-00000002'] }
+        ],
+        failingTeams: ['alpha'],
+        unattributedFailure: false
+      }),
+      facts: applyFacts(),
+      commits: COMMITS,
+      now: NOW
+    })
+
+    expect(
+      events.map(({ body }) => [
+        body.team,
+        body.failingTeams,
+        body.attributable
+      ])
+    ).toEqual([
+      ['alpha', ['alpha'], true],
+      ['bravo', ['alpha'], false]
+    ])
+    valid(events)
+  })
+
+  test('deploy-failed: no operation is attributable while a failure names no team, even if another does', () => {
+    const events = buildEvents({
+      status: 'deploy-failed',
+      report: report({
+        outcome: 'failure',
+        operations: [
+          { sha: COMMIT, operationIds: ['op-00000001'] },
+          { sha: OTHER_COMMIT, operationIds: ['op-00000002'] }
+        ],
+        failingTeams: ['alpha'],
+        unattributedFailure: true
+      }),
+      facts: applyFacts(),
+      commits: COMMITS,
+      now: NOW
+    })
+
+    expect(events.map(({ body }) => body.attributable)).toEqual([false, false])
   })
 
   test('deploy-failed: a failure with no team is not attributable', () => {
@@ -924,6 +975,93 @@ describe('buildEvent', () => {
     )
     expect(event.body.runAttempt).toBe(1)
     expect(event.body.eventId).toBe('op-00000001:requested:4242:1')
+  })
+
+  test('exports the time reporting has until, for the send to keep to', async () => {
+    vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
+    const before = Math.floor(Date.now() / 1000)
+
+    await buildEvent(commandInput({ env: env() }))
+
+    const after = Math.ceil(Date.now() / 1000)
+    const deadline = Number(exportedVariables().AIP_EVENT_DEADLINE)
+    expect(deadline).toBeGreaterThanOrEqual(before + 10)
+    expect(deadline).toBeLessThanOrEqual(after + 10)
+  })
+
+  test('honours AIP_PUBLISH_SECONDS for that time', async () => {
+    vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
+    const before = Math.floor(Date.now() / 1000)
+
+    await buildEvent(commandInput({ env: env({ AIP_PUBLISH_SECONDS: '4' }) }))
+
+    expect(Number(exportedVariables().AIP_EVENT_DEADLINE)).toBeLessThanOrEqual(
+      Math.ceil(Date.now() / 1000) + 4
+    )
+    expect(
+      Number(exportedVariables().AIP_EVENT_DEADLINE)
+    ).toBeGreaterThanOrEqual(before + 4)
+  })
+
+  // A GitHub that never answers `hangOn`, and rejects when the request's
+  // signal aborts, as fetch does; everything else goes to nock.
+  function hangingGitHub(hangOn) {
+    return new Octokit({
+      auth: 'github-token',
+      request: {
+        fetch: (url, options) =>
+          String(url).includes(hangOn)
+            ? new Promise((_resolve, reject) => {
+                options.signal.addEventListener('abort', () =>
+                  reject(options.signal.reason)
+                )
+              })
+            : fetch(url, options)
+      }
+    })
+  }
+
+  test('gives up, with a warning and no event, when GitHub is slower than the reporting budget', async () => {
+    vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
+    const file = join(process.env.RUNNER_TEMP, 'slow-report.json')
+    writeFileSync(file, JSON.stringify(report()))
+    const started = Date.now()
+
+    await expect(
+      buildEvent(
+        commandInput({
+          github: hangingGitHub(`/commits/${COMMIT}`),
+          env: applyEnv(file, { AIP_PUBLISH_SECONDS: '1' })
+        })
+      )
+    ).resolves.toEqual({ events: 0 })
+
+    expect(Date.now() - started).toBeLessThan(5000)
+    expect(exportedVariables().AIP_EVENT_FILE).toBe('')
+    expect(jobSummary()).toContain('did not answer within the 1 seconds')
+    expect(JSON.parse(readFileSync(file, 'utf8'))).not.toHaveProperty('events')
+  })
+
+  test('does not pass a break-glass change off as an apply when the pull request lookup ran out of time', async () => {
+    vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
+    const file = join(process.env.RUNNER_TEMP, 'slow-bg-report.json')
+    writeFileSync(
+      file,
+      JSON.stringify(
+        report({ operations: [{ sha: OTHER_COMMIT, operationIds: [] }] })
+      )
+    )
+    commitReply(OTHER_COMMIT)
+
+    await expect(
+      buildEvent(
+        commandInput({
+          github: hangingGitHub('/pulls'),
+          env: applyEnv(file, { AIP_PUBLISH_SECONDS: '1' })
+        })
+      )
+    ).resolves.toEqual({ events: 0 })
+    expect(exportedVariables().AIP_EVENT_FILE).toBe('')
   })
 
   test('takes no operation IDs from a step that sets none', async () => {

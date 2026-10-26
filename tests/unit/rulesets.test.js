@@ -71,8 +71,13 @@ function machineProtect(overrides = {}) {
 function given({
   list,
   main = machineMain(),
-  protect = machineProtect()
+  protect = machineProtect(),
+  defaultBranch = 'main'
 } = {}) {
+  if (defaultBranch) {
+    nock(API).get(TENANTS).reply(200, { default_branch: defaultBranch })
+  }
+
   nock(API)
     .get(`${TENANTS}/rulesets`)
     .query(true)
@@ -387,7 +392,27 @@ describe('verifyRulesets', () => {
     await expect(verify()).resolves.toBeUndefined()
   })
 
+  test.each(['dev', 'master'])(
+    'refuses to run when the default branch is %s: ~DEFAULT_BRANCH would no longer guard main',
+    async (defaultBranch) => {
+      given({ defaultBranch })
+
+      await expect(verify()).rejects.toMatchObject({
+        outcome: 'rulesets-changed',
+        message: expect.stringContaining(`default branch is ${defaultBranch}`)
+      })
+    }
+  )
+
+  test('fails closed when GitHub cannot say which branch is the default', async () => {
+    given({ defaultBranch: null })
+    nock(API).get(TENANTS).reply(500)
+
+    await expect(verify()).rejects.toMatchObject({ status: 500 })
+  })
+
   test('works with an App that has not been installed under that slug', async () => {
+    nock(API).get(TENANTS).reply(200, { default_branch: 'main' })
     nock(API)
       .get(`${TENANTS}/rulesets`)
       .query(true)

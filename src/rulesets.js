@@ -135,7 +135,8 @@ function checkProtect(ruleset) {
  * has the active repository rulesets `aip-machine-main` and
  * `aip-machine-protect`, the first bypassed by the submit Apps alone and
  * still requiring a pull request with a code-owner review and the check, the
- * second by no one and still blocking force pushes and deletion. Anything
+ * second by no one and still blocking force pushes and deletion, both
+ * guarding the default branch, which must still be main. Anything
  * else stops the apply before it runs as the deploy identity, because a
  * repository admin who can relax these can commit to main without review
  * (accepted residual risk, §15; this makes it noticed, not impossible).
@@ -188,6 +189,16 @@ async function verifyRulesets(github, { owner, repo }) {
 
   checkMain(detail[MAIN], await submitAppIds(github))
   checkProtect(detail[PROTECT])
+
+  // ~DEFAULT_BRANCH guards whatever the default branch is, and the apply
+  // works on main alone, so both rulesets only protect it while it is main.
+  const { data: repository } = await github.rest.repos.get({ owner, repo })
+
+  if (repository.default_branch !== 'main') {
+    throw changed(
+      `the default branch is ${repository.default_branch}, so ${MAIN} and ${PROTECT} no longer guard main in ${repo}`
+    )
+  }
 }
 
 export { verifyRulesets }

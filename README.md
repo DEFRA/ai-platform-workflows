@@ -74,7 +74,9 @@ The [`publish-event`](.github/actions/publish-event/action.yml) action first kee
 kept with the run. It then signs in with `azure/login` as the events identity (`AIP_EVENTS_CLIENT_ID`), gets a token
 for `AIP_EVENTS_AUDIENCE`, assumes `AIP_EVENTS_ROLE_ARN` and sends to `AIP_EVENTS_QUEUE_URL`, in the FIFO group of the
 operation (the commit for `break-glass` and for an apply no operation asked for, the environment for `pause`) and deduplicated by the event ID. It is bounded
-to 10 seconds with 2 retries and is `continue-on-error`: a deploy never fails on it. An event from a run that no
+to 10 seconds in all, the lookups of an apply's commits and pull requests included (a lookup that outlives the budget
+is aborted and the run report keeps no event), with 2 retries on the send, and is `continue-on-error`: a deploy never
+fails on it. An event from a run that no
 operation asked for, sent while SQS is down for the whole run, may never reach the portal history; the run report and
 GitHub's run history still hold it (accepted gap, plan section 15).
 

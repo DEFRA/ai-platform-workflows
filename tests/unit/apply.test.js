@@ -411,6 +411,7 @@ describe('preflight', () => {
 
   // The repository has both machine rulesets as the design has them.
   function rulesetsAsDesigned(repo = TENANTS) {
+    nock(API).get(repo).reply(200, { default_branch: 'main' })
     nock(API)
       .get(`${repo}/rulesets`)
       .query(true)

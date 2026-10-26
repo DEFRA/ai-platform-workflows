@@ -26,6 +26,14 @@ set -euo pipefail
 budget="${AIP_PUBLISH_SECONDS:-10}"
 retries="${AIP_PUBLISH_RETRIES:-2}"
 region="${AWS_REGION:-eu-west-2}"
+# build-event looked up the commits before this, inside the same budget: it
+# leaves AIP_EVENT_DEADLINE (epoch seconds) for the time that is left.
+if [[ "${AIP_EVENT_DEADLINE:-}" =~ ^[0-9]+$ ]]; then
+  left_to_deadline=$((AIP_EVENT_DEADLINE - $(date +%s)))
+  if ((left_to_deadline < budget)); then
+    budget=$left_to_deadline
+  fi
+fi
 deadline=$((SECONDS + budget))
 
 warn() {
@@ -71,6 +79,11 @@ publish() {
     -z "${AIP_EVENTS_CLIENT_ID:-}" || -z "${AZURE_TENANT_ID:-}" ||
     -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
     echo "::notice::AIP_EVENTS_QUEUE_URL, AIP_EVENTS_ROLE_ARN, AIP_EVENTS_AUDIENCE, AIP_EVENTS_CLIENT_ID, AZURE_TENANT_ID and the job's id-token permission are not all set here, so no event is sent."
+    return 0
+  fi
+
+  if (($(remaining) <= 0)); then
+    warn "the time for reporting ran out before the events were built"
     return 0
   fi
 

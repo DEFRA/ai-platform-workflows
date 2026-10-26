@@ -25,6 +25,9 @@ const RETRYABLE = {
 }
 const APPLY_FAILED = 'The apply failed; the run has the details.'
 const MAX_MESSAGE = 500
+// The time reporting may take in all (AIP_PUBLISH_SECONDS): the lookups here
+// and the send in scripts/publish-event.sh share it.
+const DEFAULT_PUBLISH_SECONDS = 10
 const PRINCIPAL_APP = /^[a-z][a-z0-9-]{0,38}$/
 const USER_ID = /^[1-9][0-9]{0,19}$/
 
@@ -201,9 +204,11 @@ function eventFor(unit, status, facts, extras) {
       }),
       ...(failed && {
         failingTeams: extras.report?.failingTeams ?? [],
+        // Only the operation of a team that failed is to blame for it; a
+        // failure no team accounts for belongs to no operation.
         attributable:
-          extras.report?.failingTeams?.length > 0 &&
-          extras.report?.unattributedFailure === false
+          extras.report?.unattributedFailure === false &&
+          (extras.report.failingTeams ?? []).includes(team)
       })
     }
   }
@@ -287,7 +292,7 @@ function recordEvents(file, events) {
   )
 }
 
-async function pullRequestsOf(github, repo, report) {
+async function pullRequestsOf(github, repo, report, signal) {
   const found = {}
 
   for (const commit of report?.operations ?? []) {
@@ -299,11 +304,14 @@ async function pullRequestsOf(github, repo, report) {
       const { data } =
         await github.rest.repos.listPullRequestsAssociatedWithCommit({
           ...repo,
-          commit_sha: commit.sha
+          commit_sha: commit.sha,
+          request: { signal }
         })
 
       found[commit.sha] = data[0]?.html_url ?? null
     } catch {
+      // A commit with no link is reported as the apply it is, but not
+      // because the time ran out: buildEvent checks the deadline after.
       found[commit.sha] = null
     }
   }
@@ -315,7 +323,7 @@ async function pullRequestsOf(github, repo, report) {
 // does not hold: the team file tells whose operation it was, the time is the
 // `committedAt` the schema requires from `committed` onwards. A commit that
 // cannot be read fails the build, so nothing invalid is sent.
-async function commitsOf(github, repo, ids, report, facts) {
+async function commitsOf(github, repo, ids, report, facts, signal) {
   if (facts.source !== 'apply') {
     return {}
   }
@@ -328,7 +336,11 @@ async function commitsOf(github, repo, ids, report, facts) {
   const found = {}
 
   for (const sha of shas) {
-    const { data } = await github.rest.repos.getCommit({ ...repo, ref: sha })
+    const { data } = await github.rest.repos.getCommit({
+      ...repo,
+      ref: sha,
+      request: { signal }
+    })
 
     found[sha] = {
       committedAt: data.commit.committer.date,
@@ -380,18 +392,44 @@ function factsOf(context, env) {
  * AIP_EVENT_REPORT, AIP_EVENT_FAILURE_CODE, AIP_EVENT_FAILURE_MESSAGE,
  * AIP_EVENT_OUT, AIP_ENVIRONMENT, and for a submit AIP_ACTION, AIP_PATH,
  * AIP_REQUESTER, AIP_TRACE_PARENT, AIP_CDP_REQUEST_ID, AIP_COMMIT_SHA and
- * AIP_COMMITTED_AT.
+ * AIP_COMMITTED_AT. The lookups of the apply's commits and pull requests
+ * share one deadline with the send (AIP_PUBLISH_SECONDS, 10): a request that
+ * outlives it is aborted, nothing is built and a warning says so. On success
+ * it exports AIP_EVENT_DEADLINE (epoch seconds), which `publish-event.sh`
+ * keeps to.
  *
  * @param {object} input - Command context from main.js.
  * @returns {Promise<{events: number}>} How many events were built.
  */
 async function buildEvent({ github, context, core, env }) {
   const out = env.AIP_EVENT_OUT || join(env.RUNNER_TEMP, 'aip-events.json')
+  const seconds = Number(env.AIP_PUBLISH_SECONDS) || DEFAULT_PUBLISH_SECONDS
+  const deadline = Date.now() + seconds * 1000
+  const signal = AbortSignal.timeout(seconds * 1000)
 
   try {
     const report = readReport(env.AIP_EVENT_REPORT)
     const ids = idsOf(env.AIP_EVENT_OPERATION_IDS)
     const facts = factsOf(context, env)
+    const commits = await commitsOf(
+      github,
+      context.repo,
+      ids,
+      report,
+      facts,
+      signal
+    )
+    const pullRequests = await pullRequestsOf(
+      github,
+      context.repo,
+      ids.length === 0 ? report : null,
+      signal
+    )
+
+    // A lookup that ran out of time is not an answer: an unread pull
+    // request would pass a break-glass change off as an ordinary apply.
+    signal.throwIfAborted()
+
     const events = buildEvents({
       status: env.AIP_EVENT_STATUS,
       ids,
@@ -401,12 +439,8 @@ async function buildEvent({ github, context, core, env }) {
         message: env.AIP_EVENT_FAILURE_MESSAGE
       },
       facts,
-      commits: await commitsOf(github, context.repo, ids, report, facts),
-      pullRequests: await pullRequestsOf(
-        github,
-        context.repo,
-        ids.length === 0 ? report : null
-      )
+      commits,
+      pullRequests
     })
 
     if (env.AIP_EVENT_REPORT) {
@@ -415,11 +449,19 @@ async function buildEvent({ github, context, core, env }) {
 
     writeFileSync(out, JSON.stringify(events))
     core.exportVariable('AIP_EVENT_FILE', out)
+    core.exportVariable(
+      'AIP_EVENT_DEADLINE',
+      String(Math.ceil(deadline / 1000))
+    )
 
     return { events: events.length }
   } catch (error) {
-    core.warning(`publish-event built nothing: ${error.message}`)
-    await writeSummary(core, 'publish-event', [error.message])
+    const reason = signal.aborted
+      ? `GitHub did not answer within the ${seconds} seconds reporting may take`
+      : error.message
+
+    core.warning(`publish-event built nothing: ${reason}`)
+    await writeSummary(core, 'publish-event', [reason])
     core.exportVariable('AIP_EVENT_FILE', '')
 
     return { events: 0 }

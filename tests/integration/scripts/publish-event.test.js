@@ -194,6 +194,37 @@ describe('publish-event.sh', () => {
       expect(result.stdout).toContain('::warning::publish-event:')
     })
 
+    test('shares the deadline build-event left: nothing is sent when the lookups used all the time', () => {
+      workspace.write('events.json', events('op-00000001'))
+
+      const result = publish({
+        AIP_EVENT_DEADLINE: String(Math.floor(Date.now() / 1000) - 5)
+      })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain(
+        '::warning::publish-event: the time for reporting ran out before the events were built'
+      )
+      expect(workspace.commands()).toEqual([])
+    })
+
+    test('keeps to the time build-event left, not to a fresh budget', () => {
+      workspace.write('events.json', events('op-00000001'))
+      const started = Date.now()
+
+      const result = publish({
+        AIP_TEST_SLEEP_CURL: '30',
+        AIP_PUBLISH_SECONDS: '300',
+        AIP_EVENT_DEADLINE: String(Math.ceil(Date.now() / 1000) + 3)
+      })
+
+      expect(result.status).toBe(0)
+      expect(Date.now() - started).toBeLessThan(15_000)
+      expect(result.stdout).toContain(
+        "::warning::publish-event: could not get the job's identity token"
+      )
+    })
+
     test('gives up within its time budget when the sign-in hangs, before any other call', () => {
       workspace.write('events.json', events('op-00000001'))
       const started = Date.now()

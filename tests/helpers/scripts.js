@@ -30,9 +30,27 @@ esac
 [[ "$*" != *"\${AIP_TEST_FAIL:-none}"* ]]
 `
 
-// Records each call to the Azure CLI; a call matching AIP_TEST_FAIL fails.
+// Records each call to the Azure CLI; a call matching AIP_TEST_FAIL fails,
+// and one that asks for a token prints a fake one after AIP_TEST_SLEEP.
 const FAKE_AZ = `#!/usr/bin/env bash
 printf 'az %s\\n' "$*" >> "$AIP_TEST_LOG"
+[[ -n "\${AIP_TEST_SLEEP:-}" && "$*" == *get-access-token* ]] && exec sleep "$AIP_TEST_SLEEP"
+[[ "$*" == *get-access-token* ]] && echo fake-entra-token
+[[ "$*" != *"\${AIP_TEST_FAIL:-none}"* ]]
+`
+
+// Records each call to the AWS CLI, and the credentials a send used; a call
+// matching AIP_TEST_FAIL fails, and every call waits AIP_TEST_SLEEP seconds.
+const FAKE_AWS = `#!/usr/bin/env bash
+printf 'aws %s\\n' "$*" >> "$AIP_TEST_LOG"
+[[ -n "\${AIP_TEST_SLEEP:-}" ]] && exec sleep "$AIP_TEST_SLEEP"
+if [[ "$*" == *assume-role-with-web-identity* ]]; then
+  for arg in "$@"; do
+    [[ "$arg" == file://* ]] && printf 'token-file %s\\n' "$(cat "\${arg#file://}")" >> "$AIP_TEST_LOG"
+  done
+  echo '{"AccessKeyId":"AKIAFAKE","SecretAccessKey":"fake-secret","SessionToken":"fake-session"}'
+fi
+[[ "$*" == *send-message* ]] && printf 'credentials %s %s %s\\n' "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" >> "$AIP_TEST_LOG"
 [[ "$*" != *"\${AIP_TEST_FAIL:-none}"* ]]
 `
 
@@ -124,6 +142,8 @@ function createWorkspace() {
   chmodSync(join(bin, 'terraform'), 0o755)
   writeFileSync(join(bin, 'az'), FAKE_AZ)
   chmodSync(join(bin, 'az'), 0o755)
+  writeFileSync(join(bin, 'aws'), FAKE_AWS)
+  chmodSync(join(bin, 'aws'), 0o755)
   writeFileSync(join(bin, 'gh'), FAKE_GH)
   chmodSync(join(bin, 'gh'), 0o755)
   writeFileSync(join(dir, 'fake-checks.cjs'), FAKE_CHECKS)

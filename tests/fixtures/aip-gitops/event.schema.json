@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Fixture copy of ai-platform-infra schemas/messages/event.schema.json (PR-3), written from contract C4 of the B28 plan until PR-3's head is pushed. Re-sync from PR-3's SHA before this pull request merges. The tests validate every event publish-event builds against it.",
+  "title": "aip.gitops.event/1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "eventId",
+    "environment",
+    "team",
+    "path",
+    "action",
+    "status",
+    "timestamp",
+    "source",
+    "requestedBy",
+    "repository",
+    "traceparent",
+    "cdpRequestId",
+    "operationId"
+  ],
+  "properties": {
+    "schema": { "const": "aip.gitops.event/1" },
+    "eventId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "environment": { "type": "string", "pattern": "^[a-z][a-z0-9]{1,15}$" },
+    "team": { "type": ["string", "null"] },
+    "path": { "type": ["string", "null"] },
+    "action": {
+      "enum": ["write", "remove", "revert", "break-glass", "apply", "pause"]
+    },
+    "status": {
+      "enum": [
+        "requested",
+        "checks-failed",
+        "committed",
+        "deploying",
+        "deployed",
+        "deploy-failed",
+        "paused",
+        "resumed"
+      ]
+    },
+    "timestamp": { "type": "string", "minLength": 20 },
+    "source": { "enum": ["submit", "apply", "pause", "reconciler"] },
+    "requestedBy": {
+      "type": "string",
+      "pattern": "^(entra:[0-9a-f-]{36}|github:[1-9][0-9]{0,19}|app:[a-z][a-z0-9-]{0,38})$"
+    },
+    "repository": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
+    "traceparent": { "type": ["string", "null"] },
+    "cdpRequestId": { "type": ["string", "null"] },
+    "operationId": { "type": ["string", "null"] },
+    "runId": { "type": "integer" },
+    "runAttempt": { "type": "integer" },
+    "runUrl": { "type": "string" },
+    "commitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "committedAt": { "type": "string" },
+    "pullRequestUrl": { "type": ["string", "null"] },
+    "failureReason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string", "maxLength": 500 },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "appliedSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "name", "id"],
+        "properties": {
+          "type": { "type": "string" },
+          "name": { "type": "string" },
+          "id": { "type": "string" }
+        }
+      }
+    },
+    "failingTeams": { "type": "array", "items": { "type": "string" } },
+    "attributable": { "type": "boolean" }
+  }
+}

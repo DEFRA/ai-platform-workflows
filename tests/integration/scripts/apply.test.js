@@ -375,11 +375,80 @@ describe('apply.sh report', () => {
       /--out run-report-infradev\.json$/
     )
   })
+
+  test('keeps the events publish-event put in the report, which the report step would otherwise overwrite', () => {
+    const events = [
+      { eventId: 'op-00000001:deploying:123:1', status: 'deploying' },
+      { eventId: 'op-00000001:requested:123:1', status: 'requested' }
+    ]
+    workspace.write('run-report-infradev.json', JSON.stringify({ events }))
+
+    const result = run('report', { AIP_OUTCOME: 'success' })
+
+    expect(result.status).toBe(0)
+    const report = JSON.parse(
+      readFileSync(join(workspace.dir, 'run-report-infradev.json'), 'utf8')
+    )
+    expect(report.events).toEqual(events)
+    expect(report.outcome).toBe('success')
+    expect(report.operations).toEqual([{ operationIds: ['op-00000001'] }])
+  })
+
+  test('adds no events key to a report that had none', () => {
+    run('report', { AIP_OUTCOME: 'success' })
+
+    expect(
+      JSON.parse(
+        readFileSync(join(workspace.dir, 'run-report-infradev.json'), 'utf8')
+      )
+    ).not.toHaveProperty('events')
+  })
+})
+
+describe('apply.sh operations', () => {
+  test('writes a first report, before the plan, so the operations the apply carries are known', () => {
+    const result = run('operations', { AIP_BASE: 'b1' })
+
+    expect(result.status).toBe(0)
+    expect(command('checks run-report')).toEqual([
+      expect.stringContaining(
+        '--outcome pending --release v0.4.0 --repository DEFRA/ai-platform-deployments ' +
+          '--run-id 123 --run-attempt 1 ' +
+          '--run-url https://github.com/DEFRA/ai-platform-deployments/actions/runs/123 ' +
+          '--out run-report-infradev.json --base b1'
+      )
+    ])
+    expect(command('checks run-report')[0]).not.toContain('--plan')
+    expect(command('terraform')).toEqual([])
+    expect(
+      JSON.parse(
+        readFileSync(join(workspace.dir, 'run-report-infradev.json'), 'utf8')
+      ).operations
+    ).toEqual([{ operationIds: ['op-00000001'] }])
+    expect(workspace.summary()).toBe('')
+  })
+
+  test('keeps the events already in the report', () => {
+    workspace.write(
+      'run-report-infradev.json',
+      JSON.stringify({ events: [{ eventId: 'x' }] })
+    )
+
+    run('operations')
+
+    expect(
+      JSON.parse(
+        readFileSync(join(workspace.dir, 'run-report-infradev.json'), 'utf8')
+      ).events
+    ).toEqual([{ eventId: 'x' }])
+  })
 })
 
 test('apply.sh explains how to call it', () => {
   const result = run('destroy')
 
   expect(result.status).toBe(2)
-  expect(result.stderr).toContain('usage: apply.sh plan|apply|purge|report')
+  expect(result.stderr).toContain(
+    'usage: apply.sh plan|apply|purge|operations|report'
+  )
 })

@@ -4,7 +4,11 @@ name: Validate desired state
 # request in ai-platform-tenants and ai-platform-deployments: one stable name,
 # because a pull request changes the files of exactly one environment.
 # Offline in Phase 1 (D7): the checks run from ai-platform-infra at that
-# environment's pinned release, with no Azure sign-in.
+# environment's pinned release, with no Azure sign-in. A pull request that
+# changes nothing under environments/ (`.github/`, the README) has no file to
+# check and passes once someone has approved its head; the callers run it on
+# pull_request_review too, and the ruleset's code-owner review (AC23) makes
+# that approval one of aice-platform-admins for `.github/`.
 
 on:
   workflow_call:
@@ -35,22 +39,27 @@ jobs:
           permission-contents: read
 
       - name: Find the environment and its pinned release
-        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
         with:
           command: prepare-validation
           app-token: ${{ steps.reader.outputs.token }}
 
-      - uses: actions/checkout@v7
+      # A pull request that changes nothing under environments/ passes once it
+      # is approved; prepare-validation says so, and there is no file to check.
+      - if: env.AIP_SKIP_VALIDATION != 'true'
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           path: state
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: DEFRA/ai-platform-workflows/.github/actions/setup@v1
+      - if: env.AIP_SKIP_VALIDATION != 'true'
+        uses: DEFRA/ai-platform-workflows/.github/actions/setup@v2
         with:
           sha: ${{ env.AIP_SHA }}
           checks: 'true'
 
       - name: Validate
+        if: env.AIP_SKIP_VALIDATION != 'true'
         run: bash "$AIP_SCRIPTS/desired-state.sh" validate

@@ -11,15 +11,17 @@ const SHA = 'a'.repeat(40)
  * GET /repos/{owner}/{repo}/contents/{path} for a file.
  *
  * @param {string | object} value - The text, or a document to serialise.
+ * @param {string} [sha] - The file's blob SHA.
  * @returns {object} The content object.
  */
-function fileContent(value) {
+function fileContent(value, sha = 'a1'.repeat(20)) {
   const text =
     typeof value === 'string' ? value : `${JSON.stringify(value, null, 2)}\n`
 
   return {
     type: 'file',
     encoding: 'base64',
+    sha,
     content: Buffer.from(text).toString('base64')
   }
 }

@@ -38,6 +38,7 @@ const BRANCH = 'release-please--branches--main'
 const HEAD = 'b'.repeat(40)
 const REQUIRED = ['infra-checks / validate', 'infra-checks / lint']
 const BOT = 'ai-platform-orchestrator[bot]'
+const PIN_BLOB = 'ab'.repeat(20)
 
 describe('mergeRelease', () => {
   function input(run = {}) {
@@ -310,7 +311,7 @@ describe('submitAutoPins', () => {
     nock(API)
       .get(`${DEPLOYMENTS}/contents/environments%2Finfradev%2Fplatform.json`)
       .query({ ref: 'main' })
-      .reply(200, fileContent(pin()))
+      .reply(200, fileContent(pin(), PIN_BLOB))
     nock(API)
       .get(`${DEPLOYMENTS}/contents/environments%2Fsandbox%2Fplatform.json`)
       .query({ ref: 'main' })
@@ -336,6 +337,11 @@ describe('submitAutoPins', () => {
       requested_by: 'app:ai-platform-orchestrator'
     })
     expect(sandbox.operation_id).toBe('rel-sandbox-v0-5-0-98765')
+    // Every write names its base (AC20): the blob the pin has on main now,
+    // or 0 for a pin that does not exist yet.
+    expect(infradev.expected_base).toBe(PIN_BLOB)
+    expect(sandbox.expected_base).toBe('0')
+    expect(infradev).not.toHaveProperty('abandon')
 
     const document = JSON.parse(infradev.document)
     expect(document).toMatchObject({

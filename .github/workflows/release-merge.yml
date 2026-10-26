@@ -34,7 +34,7 @@ jobs:
           permission-pull-requests: write
           permission-checks: read
 
-      - uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+      - uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
         with:
           command: merge-release
           token: ${{ steps.merger.outputs.token }}

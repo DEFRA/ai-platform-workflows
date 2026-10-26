@@ -1,5 +1,7 @@
+import { adminCheck } from './admin.js'
 import { dispatchApply, preflight, resolveApply } from './apply.js'
 import { dispatchChangedEnvironments, latestRelease } from './environments.js'
+import { buildEvent } from './events.js'
 import { withApiVersion, writeSummary } from './github.js'
 import { OutcomeError } from './gitops.js'
 import {
@@ -8,20 +10,23 @@ import {
   resolveRelease,
   submitAutoPins
 } from './release.js'
-import { abandon, prepareSubmit, prune, submit } from './submit.js'
+import { held, pauseGate } from './pause.js'
+import { prepareSubmit, submit } from './submit.js'
 import { prepareValidation } from './validate.js'
 
 const COMMANDS = {
-  abandon,
+  'admin-check': adminCheck,
+  'build-event': buildEvent,
   'dispatch-apply': dispatchApply,
   'dispatch-changed-environments': dispatchChangedEnvironments,
+  held,
   'latest-release': latestRelease,
   'merge-release': mergeRelease,
   'move-major-tag': moveMajorTag,
+  'pause-gate': pauseGate,
   preflight,
   'prepare-submit': prepareSubmit,
   'prepare-validation': prepareValidation,
-  prune,
   'resolve-apply': resolveApply,
   'resolve-release': resolveRelease,
   submit,
@@ -33,7 +38,8 @@ const COMMANDS = {
  * actions/github-script. Both clients send the contract's API version; the
  * second, `app`, exists when GITOPS_APP_TOKEN holds an App installation token
  * for the other GitOps repositories. A failure the contract names writes its
- * outcome code to the job summary and the `outcome` output and fails the step.
+ * outcome code to the job summary and the `outcome` output, exports it as
+ * AIP_FAILURE_CODE and AIP_FAILURE_MESSAGE, and fails the step.
  *
  * @param {object} input - What github-script injects.
  * @param {object} input.github - Octokit authenticated with the step's token.
@@ -78,6 +84,9 @@ async function run({ github, context, core, getOctokit, env = process.env }) {
       throw error
     }
 
+    // For the step that reports the refusal as an event (publish-event).
+    core.exportVariable('AIP_FAILURE_CODE', outcome)
+    core.exportVariable('AIP_FAILURE_MESSAGE', error.message)
     core.setFailed(error.message)
 
     return { outcome }

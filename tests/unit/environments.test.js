@@ -1,5 +1,6 @@
 import nock from 'nock'
 
+import { isExemptApp } from '../../src/admin.js'
 import {
   dispatchChangedEnvironments,
   latestRelease
@@ -105,6 +106,23 @@ describe('dispatchChangedEnvironments', () => {
     })
     expect(started.isDone()).toBe(true)
     expect(jobSummary()).toContain('actions/runs/31')
+  })
+
+  test('dispatches as the GitOps App, an exempt actor, never as github-actions[bot] with the workflow token', async () => {
+    registryAtHead()
+    changed(['environments/infradev/platform.tfvars.json'])
+    pinned('infradev')
+    const asApp = nock(API, {
+      reqheaders: { authorization: 'token app-token' }
+    })
+      .post(`${DEPLOYMENTS}/actions/workflows/apply.yml/dispatches`)
+      .reply(200, dispatchedRun(33, 'ai-platform-deployments'))
+
+    await dispatchChangedEnvironments(input())
+
+    expect(asApp.isDone()).toBe(true)
+    expect(isExemptApp('ai-platform-orchestrator[bot]')).toBe(true)
+    expect(isExemptApp('github-actions[bot]')).toBe(false)
   })
 
   test('dispatches every environment when a shared file changed', async () => {

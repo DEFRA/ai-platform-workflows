@@ -5,7 +5,10 @@ name: Apply state
 # at the environment's pinned ai-platform-infra release, as
 # id-aip-deploy-{env} through OIDC, with the apply safeguards of design C
 # (R1 to R6, R12). The platform apply then dispatches the tenants apply. No
-# step waits for a person.
+# step waits for a person. Each apply sends deploying, then deployed or
+# deploy-failed, as events for the operations it carries (design B
+# `#workflows`, `docs/async-operations-plan.md` section 5); a superseded,
+# empty or cancelled run sends none.
 
 on:
   workflow_call:
@@ -23,13 +26,18 @@ on:
         type: string
         required: false
         default: ''
+      all:
+        description: Applies every environment from main, whatever changed (reconcile-all). Takes no environment and no break-glass input.
+        type: boolean
+        required: false
+        default: false
       allow_destroy:
-        description: Break-glass, engineers only. Lets plan-guard pass deletes; reported.
+        description: Break-glass, admins only. Lets plan-guard pass deletes; reported.
         type: boolean
         required: false
         default: false
       force_unlock:
-        description: Break-glass, engineers only. A state lease ID left by a lost runner (R6).
+        description: Break-glass, admins only. A state lease ID left by a lost runner (R6).
         type: string
         required: false
         default: ''
@@ -37,8 +45,32 @@ on:
 permissions: {}
 
 jobs:
+  # First, before anything is read or changed: who dispatched this (AC18).
+  access:
+    name: access
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check who dispatched this
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
+        with:
+          command: admin-check
+        env:
+          AIP_ADMIN_SCOPE: apply
+          AIP_ENVIRONMENT: ${{ inputs.environment }}
+          AIP_ACTOR: ${{ github.actor }}
+          AIP_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          AIP_BREAK_GLASS_INPUTS: ${{ inputs.allow_destroy || inputs.force_unlock != '' }}
+          AIP_ALL: ${{ inputs.all }}
+          # The caller's workflow file: the exemption for an engineer's
+          # reconcile-all keys on it (DD25).
+          AIP_WORKFLOW_REF: ${{ github.workflow_ref }}
+
   resolve:
     name: resolve
+    needs: access
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -57,13 +89,14 @@ jobs:
           permission-deployments: read
 
       - id: resolve
-        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
         with:
           command: resolve-apply
           app-token: ${{ steps.reader.outputs.token }}
         env:
           AIP_STATE: ${{ inputs.state }}
           AIP_ENVIRONMENT: ${{ inputs.environment }}
+          AIP_ALL: ${{ inputs.all }}
           AIP_CONFIG: config
 
       - if: toJSON(fromJSON(steps.resolve.outputs.result).matrix) != '[]'
@@ -73,9 +106,42 @@ jobs:
           path: config
           retention-days: 7
 
+  # Each environment's pause is read in its `{env}-events` Environment, the
+  # only one that holds AIP_PAUSED, so each leg records whether an exempt
+  # App's dispatch is held back; the apply job reads it (section 5, Pause).
+  gate:
+    name: pause ${{ matrix.environment }}
+    needs: resolve
+    if: needs.resolve.outputs.matrix != '[]'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    environment:
+      name: ${{ matrix.environment }}-events
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    env:
+      AIP_ENVIRONMENT: ${{ matrix.environment }}
+      AIP_PAUSED: ${{ vars.AIP_PAUSED }}
+      AIP_ACTOR: ${{ github.actor }}
+      AIP_HELD_FILE: held.txt
+    steps:
+      - uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
+        with:
+          command: pause-gate
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: held-${{ matrix.environment }}
+          path: held.txt
+          retention-days: 1
+
   apply:
     name: ${{ matrix.environment }}
-    needs: resolve
+    needs: [resolve, gate]
     if: needs.resolve.outputs.matrix != '[]'
     runs-on: ${{ fromJSON(matrix.runner) }}
     timeout-minutes: 240
@@ -102,16 +168,34 @@ jobs:
       AIP_BREAK_GLASS: ${{ github.event_name == 'workflow_dispatch' && !endsWith(github.triggering_actor, '[bot]') }}
       AIP_ALLOW_DESTROY: ${{ inputs.allow_destroy }}
       AIP_FORCE_UNLOCK: ${{ inputs.force_unlock }}
+      AIP_EVENT_SOURCE: apply
+      AIP_EVENTS_QUEUE_URL: ${{ vars.AIP_EVENTS_QUEUE_URL }}
+      AIP_EVENTS_ROLE_ARN: ${{ vars.AIP_EVENTS_ROLE_ARN }}
+      AIP_EVENTS_CLIENT_ID: ${{ vars.AIP_EVENTS_CLIENT_ID }}
+      AIP_EVENTS_AUDIENCE: ${{ vars.AIP_EVENTS_AUDIENCE }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       ARM_USE_OIDC: 'true'
       ARM_USE_CLI: 'false'
     steps:
+      # Reads the repository's rulesets, bypass lists included, which needs
+      # Administration: read (the apply refuses to run if aip-machine-main or
+      # aip-machine-protect changed).
+      - id: checker
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+
       - id: preflight
-        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
         with:
           command: preflight
+          app-token: ${{ steps.checker.outputs.token }}
 
       - uses: actions/checkout@v7
         with:
@@ -124,18 +208,54 @@ jobs:
           name: config
           path: config
 
-      - uses: DEFRA/ai-platform-workflows/.github/actions/setup@v1
+      - uses: DEFRA/ai-platform-workflows/.github/actions/setup@v2
         with:
           sha: ${{ matrix.sha }}
           terraform: 'true'
           checks: 'true'
 
+      # Which operations this apply carries, from the commits since the last
+      # applied one, so the events can name them.
+      - name: Name the operations in this apply
+        run: bash "$AIP_SCRIPTS/apply.sh" operations
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: held-${{ matrix.environment }}
+          path: held
+
+      - uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
+        with:
+          command: held
+        env:
+          AIP_HELD_FILE: held/held.txt
+
+      # An App's dispatch (a retry or a reconcile) while the environment is
+      # paused applies nothing; a push or an admin's hand run goes through.
+      - name: Tell the Portal API the apply is held back
+        if: env.AIP_HELD == 'true'
+        uses: DEFRA/ai-platform-workflows/.github/actions/publish-event@v2
+        with:
+          status: deploy-failed
+          run-report: run-report-${{ matrix.environment }}.json
+          failure-code: paused
+          failure-message: ${{ matrix.environment }} is paused; the apply changed nothing.
+
+      - name: Tell the Portal API the apply has started
+        if: env.AIP_HELD != 'true'
+        uses: DEFRA/ai-platform-workflows/.github/actions/publish-event@v2
+        with:
+          status: deploying
+          run-report: run-report-${{ matrix.environment }}.json
+
       - name: Plan and guard the plan (R4, R6, R2)
         id: plan
+        if: env.AIP_HELD != 'true'
         run: bash "$AIP_SCRIPTS/apply.sh" plan
 
       - name: Apply the saved plan
         id: apply
+        if: env.AIP_HELD != 'true'
         run: bash "$AIP_SCRIPTS/apply.sh" apply
 
       # Deleted Entra registrations count towards the deploy identity's
@@ -153,10 +273,22 @@ jobs:
         run: bash "$AIP_SCRIPTS/apply.sh" purge
 
       - name: Run report (R3, R12)
-        if: always() && env.AIP_SCRIPTS != ''
+        if: always() && env.AIP_SCRIPTS != '' && env.AIP_HELD != 'true'
         env:
           AIP_OUTCOME: ${{ steps.apply.outcome == 'success' && 'success' || 'failure' }}
         run: bash "$AIP_SCRIPTS/apply.sh" report
+
+      # Once per operation: deployed, or deploy-failed with who is to blame.
+      # A superseded run stopped at its preflight and a cancelled one send
+      # nothing.
+      - name: Tell the Portal API how the apply ended
+        if: >-
+          always() && !cancelled() && steps.preflight.outcome == 'success' &&
+          env.AIP_HELD != 'true'
+        uses: DEFRA/ai-platform-workflows/.github/actions/publish-event@v2
+        with:
+          status: ${{ steps.apply.outcome == 'success' && 'deployed' || 'deploy-failed' }}
+          run-report: run-report-${{ matrix.environment }}.json
 
       - if: always() && hashFiles(format('run-report-{0}.json', matrix.environment)) != ''
         uses: actions/upload-artifact@v7
@@ -187,7 +319,7 @@ jobs:
           repositories: ai-platform-tenants
           permission-actions: write
 
-      - uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+      - uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
         with:
           command: dispatch-apply
           token: ${{ steps.dispatcher.outputs.token }}

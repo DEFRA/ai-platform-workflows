@@ -60,6 +60,7 @@ fi
 // applied with jq. Writes succeed silently.
 const FAKE_GH = `#!/usr/bin/env bash
 printf 'gh %s\\n' "$*" >> "$AIP_TEST_LOG"
+[[ " $* " == *" --silent "* ]] && exec > /dev/null
 if [[ " $* " == *" --input - "* ]]; then printf 'body %s\\n' "$(jq -c . )" >> "$AIP_TEST_LOG"; fi
 method=GET; path=''; filter=''
 args=("$@")
@@ -67,8 +68,8 @@ for ((i = 0; i < \${#args[@]}; i++)); do
   case "\${args[i]}" in
     -X) method="\${args[i + 1]}"; ((i++)) ;;
     --jq) filter="\${args[i + 1]}"; ((i++)) ;;
-    --input|-f|-F) ((i++)) ;;
-    repos/*) [[ -z "$path" ]] && path="\${args[i]}" ;;
+    --input|-f|-F|-H) ((i++)) ;;
+    repos/*|orgs/*) [[ -z "$path" ]] && path="\${args[i]}" ;;
   esac
 done
 [[ "$method" != GET ]] && exit 0
@@ -224,4 +225,4 @@ function createWorkspace() {
   }
 }
 
-export { createWorkspace, posix }
+export { createWorkspace, posix, SCRIPTS }

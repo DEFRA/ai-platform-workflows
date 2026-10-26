@@ -28,7 +28,7 @@ jobs:
         with:
           args: -color
 
-      - run: shellcheck scripts/*.sh
+      - run: shellcheck scripts/*.sh scripts/setup/*.sh
 
   tests:
     name: tests

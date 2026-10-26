@@ -289,10 +289,13 @@ jobs:
         if: steps.apply.outcome == 'success' && steps.plan.outputs.entra_deletes != '0'
         run: bash "$AIP_SCRIPTS/apply.sh" purge
 
+      # A held run records its report as paused: the backend corroborates the
+      # paused deploy-failed from that outcome and the reconciler reads it, so
+      # a report left pending would be dropped and the apply dispatched again.
       - name: Run report (R3, R12)
-        if: always() && env.AIP_SCRIPTS != '' && env.AIP_HELD != 'true'
+        if: always() && env.AIP_SCRIPTS != ''
         env:
-          AIP_OUTCOME: ${{ steps.apply.outcome == 'success' && 'success' || 'failure' }}
+          AIP_OUTCOME: ${{ env.AIP_HELD == 'true' && 'paused' || (steps.apply.outcome == 'success' && 'success' || 'failure') }}
         run: bash "$AIP_SCRIPTS/apply.sh" report
 
       # Once per operation: deployed, or deploy-failed with who is to blame.

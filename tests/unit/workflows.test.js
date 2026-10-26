@@ -162,16 +162,18 @@ describe('submit-desired-state.yml', () => {
     expect(job(file, 'submit')).toMatch(/^ {4}needs: access$/m)
   })
 
-  test('sends requested, committed and a retryable refusal, and nothing on a commit conflict', () => {
+  test('sends requested, committed and every retryable refusal, a commit conflict included', () => {
     const text = job(file, 'submit')
 
     for (const status of ['requested', 'committed', 'checks-failed']) {
       expect(text).toMatch(new RegExp(`status: ${status}$`, 'm'))
     }
+    // Contract C4: stale-revision, paused and commit-conflict are the codes
+    // the backend resubmits. Left unsent, the reconciler finds a failed run
+    // with no recorded refusal and reports it as a final submit-failed.
     expect(text).toContain(
-      `contains(fromJSON('["checks-failed","stale-revision","paused"]'), env.AIP_FAILURE_CODE)`
+      `contains(fromJSON('["checks-failed","stale-revision","paused","commit-conflict"]'), env.AIP_FAILURE_CODE)`
     )
-    expect(text).not.toContain('commit-conflict"')
   })
 
   test('uploads a report that holds only the events', () => {
@@ -260,7 +262,7 @@ describe('apply-state.yml', () => {
     expect(final).toContain("env.AIP_HELD != 'true'")
   })
 
-  test('holds back plan, apply and the report while the environment is paused for an App', () => {
+  test('holds back plan and apply while the environment is paused for an App, but still writes the report, as paused', () => {
     const text = job(file, 'apply')
 
     for (const step of ['id: plan', 'id: apply']) {
@@ -268,8 +270,17 @@ describe('apply-state.yml', () => {
         new RegExp(`${step}\\n {8}if: env\\.AIP_HELD != 'true'`)
       )
     }
-    expect(text).toContain(
-      "if: always() && env.AIP_SCRIPTS != '' && env.AIP_HELD != 'true'"
+
+    // The backend corroborates a paused deploy-failed from a report whose
+    // outcome is `paused`, and the reconciler reads it the same way; a report
+    // left `pending` is dropped and the apply is dispatched again.
+    const report = text.match(
+      /- name: Run report \(R3, R12\)\n {8}if: ([^\n]+)\n {8}env:\n {10}AIP_OUTCOME: ([^\n]+)\n/
+    )
+
+    expect(report[1]).toBe("always() && env.AIP_SCRIPTS != ''")
+    expect(report[2]).toBe(
+      "${{ env.AIP_HELD == 'true' && 'paused' || (steps.apply.outcome == 'success' && 'success' || 'failure') }}"
     )
   })
 

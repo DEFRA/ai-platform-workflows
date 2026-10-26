@@ -405,6 +405,27 @@ describe('apply.sh report', () => {
     expect(report.operations).toEqual([{ operationIds: ['op-00000001'] }])
   })
 
+  test('records a held apply as paused, keeping its deploy-failed event, which is what the backend and the reconciler read', () => {
+    const events = [
+      {
+        eventId: 'op-00000001:deploy-failed:123:1',
+        status: 'deploy-failed',
+        failureReason: { code: 'paused', retryable: true }
+      }
+    ]
+    workspace.write('run-report-infradev.json', JSON.stringify({ events }))
+
+    const result = run('report', { AIP_OUTCOME: 'paused' })
+
+    expect(result.status).toBe(0)
+    const report = JSON.parse(
+      readFileSync(join(workspace.dir, 'run-report-infradev.json'), 'utf8')
+    )
+    expect(report.outcome).toBe('paused')
+    expect(report.events).toEqual(events)
+    expect(workspace.summary()).toContain('### paused')
+  })
+
   test('adds no events key to a report that had none', () => {
     run('report', { AIP_OUTCOME: 'success' })
 

@@ -649,7 +649,7 @@ describe('submit', () => {
       expect(options.env.AIP_GIT_TOKEN).toBe('github-token')
     })
 
-    test('gives up after the third attempt with commit-conflict, which sends no terminal event', async () => {
+    test('gives up after the third attempt with commit-conflict, which the workflow reports as a retryable refusal', async () => {
       commitMutation(() => true, MOVED)
       commitMutation(() => true, MOVED)
       commitMutation(() => true, MOVED)

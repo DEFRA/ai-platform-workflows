@@ -209,12 +209,13 @@ jobs:
           operation-ids: ${{ env.AIP_OPERATION_ID }}
           run-report: run-report-${{ inputs.environment }}.json
 
-      # A refusal is retryable (stale-revision, paused) or not (checks-failed).
-      # commit-conflict sends nothing: the reconciler dispatches again.
+      # A refusal is retryable (stale-revision, paused, commit-conflict) or
+      # not (checks-failed). A commit-conflict is sent too: it is kept in the run
+      # report, which is what the reconciler reads, and the backend resubmits it.
       - name: Tell the Portal API the change was refused
         if: >-
           failure() && env.AIP_OPERATION_ID != '' &&
-          contains(fromJSON('["checks-failed","stale-revision","paused"]'), env.AIP_FAILURE_CODE)
+          contains(fromJSON('["checks-failed","stale-revision","paused","commit-conflict"]'), env.AIP_FAILURE_CODE)
         uses: DEFRA/ai-platform-workflows/.github/actions/publish-event@v2
         with:
           status: checks-failed

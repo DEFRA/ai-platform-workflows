@@ -384,8 +384,9 @@ async function restage({ github, env, run }) {
  * Requested-By and Traceparent trailers. No pull request. When the head has
  * moved it stages and validates again on the new head (desired-state.sh
  * restage), after one to three seconds, up to 3 attempts, then ends with
- * `commit-conflict`, after which no terminal event is sent and the reconciler
- * re-dispatches. A restage that finds the base stale ends `stale-revision`.
+ * `commit-conflict`, which is sent as a retryable `checks-failed` like
+ * `stale-revision` (and kept in the run report for the reconciler), so the
+ * backend resubmits it. A restage that finds the base stale ends `stale-revision`.
  * Exports AIP_COMMIT_SHA and AIP_COMMITTED_AT.
  *
  * Inputs: AIP_ACTION, AIP_ENVIRONMENT, AIP_PATH, AIP_DOCUMENT,

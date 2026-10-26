@@ -977,6 +977,29 @@ describe('buildEvent', () => {
     expect(event.body.eventId).toBe('op-00000001:requested:4242:1')
   })
 
+  test('keeps a commit-conflict refusal in the run report as retryable, for the reconciler to read', async () => {
+    vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
+    const file = join(process.env.RUNNER_TEMP, 'conflict-report.json')
+
+    await buildEvent(
+      commandInput({
+        env: env({
+          AIP_EVENT_STATUS: 'checks-failed',
+          AIP_EVENT_REPORT: file,
+          AIP_EVENT_FAILURE_CODE: 'commit-conflict',
+          AIP_EVENT_FAILURE_MESSAGE: 'main moved on 3 attempts'
+        })
+      })
+    )
+
+    const [kept] = JSON.parse(readFileSync(file, 'utf8')).events
+    expect(kept).toMatchObject({
+      operationId: 'op-00000001',
+      status: 'checks-failed',
+      failureReason: { code: 'commit-conflict', retryable: true }
+    })
+  })
+
   test('exports the time reporting has until, for the send to keep to', async () => {
     vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
     const before = Math.floor(Date.now() / 1000)

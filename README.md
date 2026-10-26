@@ -43,8 +43,8 @@ by a newer one (R1) loses nothing; a dispatch applies the environment it names; 
 
 `submit` commits with `createCommitOnBranch` and `expectedHeadOid`, so the file lands on the head it was validated
 against or not at all. When the head has moved it stages and validates again on the new head, after one to three
-seconds, up to three attempts, then ends `commit-conflict` and sends no terminal event (the reconciler dispatches
-again). A base that no longer matches (`expected_revision` of a team file, `expected_base` of a pin) ends
+seconds, up to three attempts, then ends `commit-conflict`, which it sends as a retryable `checks-failed` (kept in the run
+report too, which is what the reconciler reads) so the backend resubmits it. A base that no longer matches (`expected_revision` of a team file, `expected_base` of a pin) ends
 `stale-revision`; both it and `paused` commit nothing and send `checks-failed` with `failureReason.retryable: true`.
 A hand run makes its own operation ID (`hand-{run ID}`) and is refused one that is passed in. A repeat dispatch of an
 operation that already committed commits nothing and sends `committed` again.
@@ -57,7 +57,7 @@ Portal API follows the run without polling GitHub:
 
 | Run    | Events                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| submit | `requested` (adds the run to the operation), then `committed`, or `checks-failed` with a failure reason (`checks-failed`, or the retryable `stale-revision` or `paused`)                                                                                                                                                                                                                                                                                            |
+| submit | `requested` (adds the run to the operation), then `committed`, or `checks-failed` with a failure reason (`checks-failed`, or the retryable `stale-revision`, `paused` or `commit-conflict`)                                                                                                                                                                                                                                                                         |
 | apply  | `deploying` after the preflight and the pause check, then `deployed` or `deploy-failed` (with `failingTeams` and `attributable`), for each ID in the run report's `operations[].operationIds[]`; a commit with no operation ID is a `break-glass` event (with the pull request that carried it) or, with none, an `apply` event about the commit; a run with no operation is one event about the commit it applied. A superseded, empty or cancelled run sends none |
 | pause  | `paused` or `resumed` for the environment                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
@@ -97,7 +97,8 @@ An admin sets `AIP_PAUSED` (`true` or `false`) on the `{env}-events` Environment
 `pause.yml`. The workflows read the variable themselves, so a lost `paused` event cannot let an automatic write through:
 while it is `true`, `submit` refuses an exempt App's write (`paused`, retryable) and an apply an exempt App dispatched
 reads it in a first job on `{env}-events` and, after its preflight, applies nothing and sends `deploy-failed` with the
-retryable code `paused`. Pushes and an admin's hand runs go through.
+retryable code `paused`, and records its run report with the outcome `paused` (the backend corroborates the event from
+it and the reconciler reads it). Pushes and an admin's hand runs go through.
 
 ## How they are built
 

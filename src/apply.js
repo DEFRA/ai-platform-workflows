@@ -1,5 +1,6 @@
 import {
   changedPaths,
+  configDir,
   dispatchWorkflow,
   folderExists,
   gitopsRepo,
@@ -208,7 +209,7 @@ async function resolveApply({ github, app, context, core, env }) {
     await writeEnvironmentsConfig(app, {
       owner,
       environments: matrix.map((leg) => leg.environment),
-      dir: env.AIP_CONFIG || 'config'
+      dir: configDir(env)
     })
   }
 

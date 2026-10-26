@@ -165,6 +165,21 @@ describe('buildEvents', () => {
     }
   )
 
+  test('says the change failed its checks when nothing more is known', () => {
+    const [event] = buildEvents({
+      status: 'checks-failed',
+      ids: ['op-00000001'],
+      facts: submitFacts(),
+      now: NOW
+    })
+
+    expect(event.body.failureReason).toEqual({
+      code: 'checks-failed',
+      message: 'The change failed its checks.',
+      retryable: false
+    })
+  })
+
   test('shortens a long failure message and defaults the code', () => {
     const [event] = buildEvents({
       status: 'checks-failed',
@@ -430,6 +445,14 @@ describe('recordEvents', () => {
     })
   })
 
+  test('refuses to overwrite a report it cannot read', () => {
+    const file = join(process.env.RUNNER_TEMP, 'corrupt-report.json')
+    writeFileSync(file, '{ not json')
+
+    expect(() => recordEvents(file, [])).toThrow()
+    expect(readFileSync(file, 'utf8')).toBe('{ not json')
+  })
+
   test('adds to the events a run report already holds, once per event ID', () => {
     const file = join(process.env.RUNNER_TEMP, 'old-report.json')
     const first = buildEvents({
@@ -664,5 +687,104 @@ describe('buildEvent', () => {
       message: 'infradev is paused',
       retryable: true
     })
+  })
+
+  test('works from the defaults: events written under RUNNER_TEMP, a first attempt, no report kept', async () => {
+    vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
+
+    await expect(
+      buildEvent(
+        commandInput({
+          env: env({
+            AIP_EVENT_OUT: '',
+            AIP_EVENT_REPORT: '',
+            RUNNER_TEMP: process.env.RUNNER_TEMP,
+            GITHUB_RUN_ATTEMPT: undefined
+          })
+        })
+      )
+    ).resolves.toEqual({ events: 1 })
+
+    const [event] = JSON.parse(
+      readFileSync(join(process.env.RUNNER_TEMP, 'aip-events.json'), 'utf8')
+    )
+    expect(event.body.runAttempt).toBe(1)
+    expect(event.body.eventId).toBe('op-00000001:requested:4242:1')
+  })
+
+  test('takes no operation IDs from a step that sets none', async () => {
+    vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
+
+    await expect(
+      buildEvent(
+        commandInput({
+          env: env({
+            AIP_EVENT_OPERATION_IDS: undefined,
+            AIP_EVENT_STATUS: 'paused',
+            AIP_EVENT_SOURCE: 'pause',
+            AIP_EVENT_REPORT: ''
+          })
+        })
+      )
+    ).resolves.toEqual({ events: 1 })
+  })
+
+  test.each([
+    ['an actor with no user ID', { GITHUB_ACTOR_ID: undefined }, 'someone'],
+    [
+      'a report that is not JSON',
+      { AIP_EVENT_REPORT: 'corrupt.json' },
+      'ai-platform-orchestrator[bot]'
+    ]
+  ])(
+    'sends nothing, and never fails, for %s',
+    async (_why, overrides, actor) => {
+      vi.stubEnv('GITHUB_ACTOR', actor)
+      writeFileSync(join(process.env.RUNNER_TEMP, 'corrupt.json'), '{ not json')
+      const report = overrides.AIP_EVENT_REPORT
+        ? join(process.env.RUNNER_TEMP, 'corrupt.json')
+        : undefined
+
+      await expect(
+        buildEvent(
+          commandInput({
+            env: env({
+              AIP_EVENT_SOURCE: 'apply',
+              AIP_EVENT_OPERATION_IDS: 'op-00000001',
+              ...overrides,
+              ...(report && { AIP_EVENT_REPORT: report })
+            })
+          })
+        )
+      ).resolves.toEqual({ events: 0 })
+      expect(exportedVariables().AIP_EVENT_FILE).toBe('')
+    }
+  )
+
+  test('sends a break-glass event with no link when the commit has no pull request', async () => {
+    vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
+    const file = join(process.env.RUNNER_TEMP, 'bg3-report.json')
+    writeFileSync(
+      file,
+      JSON.stringify(
+        report({ operations: [{ sha: OTHER_COMMIT, operationIds: [] }] })
+      )
+    )
+    nock(API).get(`${TENANTS}/commits/${OTHER_COMMIT}/pulls`).reply(200, [])
+
+    await buildEvent(
+      commandInput({
+        env: env({
+          AIP_EVENT_STATUS: 'deployed',
+          AIP_EVENT_SOURCE: 'apply',
+          AIP_EVENT_OPERATION_IDS: '',
+          AIP_EVENT_REPORT: file
+        })
+      })
+    )
+
+    expect(
+      JSON.parse(readFileSync(file, 'utf8')).events[0].pullRequestUrl
+    ).toBeNull()
   })
 })

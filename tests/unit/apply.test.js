@@ -537,6 +537,27 @@ describe('dispatchApply', () => {
     expect(jobSummary()).toContain('actions/runs/88')
   })
 
+  test('records a run GitHub did not name, with no reason', async () => {
+    nock(API)
+      .post(`${DEPLOYMENTS}/actions/workflows/apply.yml/dispatches`, {
+        ref: 'main',
+        inputs: { environment: 'infradev', reason: '' }
+      })
+      .reply(204)
+
+    await expect(
+      dispatchApply(
+        commandInput(
+          {
+            env: { AIP_TARGET: 'deployments', AIP_ENVIRONMENTS: '["infradev"]' }
+          },
+          { repo: 'ai-platform-deployments' }
+        )
+      )
+    ).resolves.toEqual({ runs: [{ environment: 'infradev', url: null }] })
+    expect(jobSummary()).toContain('- `infradev`: started')
+  })
+
   test('refuses a target that is not a state repository', async () => {
     await expect(
       dispatchApply(

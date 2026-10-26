@@ -3,7 +3,13 @@ import { join } from 'node:path'
 
 import nock from 'nock'
 
-import { commitMessage, prepareSubmit, submit } from '../../src/submit.js'
+import {
+  commitMessage,
+  prepareSubmit,
+  runScript,
+  submit,
+  TIMERS
+} from '../../src/submit.js'
 import { fileContent, gitRef } from '../fixtures/github-api.js'
 import { INFRA_SHA, pin } from '../fixtures/gitops-documents.js'
 import {
@@ -178,7 +184,18 @@ describe('prepareSubmit', () => {
     ],
     [{ AIP_DOCUMENT: '' }, 'document must be under 60 KB'],
     [{ AIP_DOCUMENT: 'x'.repeat(61440) }, 'document must be under 60 KB'],
-    [{ AIP_ACTION: 'revert', AIP_DOCUMENT: '' }, 'document must be under 60 KB']
+    [
+      { AIP_ACTION: 'revert', AIP_DOCUMENT: '' },
+      'document must be under 60 KB'
+    ],
+    [{ AIP_ENVIRONMENT: undefined }, 'invalid environment'],
+    [{ AIP_PATH: undefined }, 'path must be environments/infradev/{name}.json'],
+    [
+      { AIP_EXPECTED_REVISION: undefined },
+      'expected_revision must be a whole number'
+    ],
+    [{ AIP_DOCUMENT: undefined }, 'document must be under 60 KB'],
+    [{ AIP_OPERATION_ID_INPUT: undefined }, 'invalid operation_id']
   ])('refuses %o before writing anything', async (env, message) => {
     await expect(
       prepareSubmit(commandInput({ env: submission(env) }, BY_APP))
@@ -199,6 +216,7 @@ describe('prepareSubmit', () => {
   test.each([
     [{ AIP_EXPECTED_BASE: '' }],
     [{ AIP_EXPECTED_BASE: 'main' }],
+    [{ AIP_EXPECTED_BASE: undefined }],
     [{ AIP_EXPECTED_BASE: BLOB.toUpperCase() }]
   ])('refuses a pin that does not name its base (%o)', async (env) => {
     await expect(
@@ -246,6 +264,23 @@ describe('prepareSubmit', () => {
     })
     expect(exported).not.toHaveProperty('AIP_OUTCOME')
     expect(readFileSync(exported.AIP_DOCUMENT_FILE, 'utf8')).toBe(DOCUMENT)
+  })
+
+  test('stages a removal with no document and no file to write', async () => {
+    history()
+    pinOnMain()
+    tagResolves()
+    environmentsRepo()
+
+    await expect(
+      prepareSubmit(
+        commandInput(
+          { env: submission({ AIP_ACTION: 'remove', AIP_DOCUMENT: '' }) },
+          BY_APP
+        )
+      )
+    ).resolves.toMatchObject({ kind: 'tenants', release: 'v0.4.0' })
+    expect(exportedVariables()).not.toHaveProperty('AIP_DOCUMENT_FILE')
   })
 
   test('stages a revert as a write of the document it is given', async () => {
@@ -710,11 +745,45 @@ describe('submit', () => {
     ).rejects.toMatchObject({ name: 'GraphqlResponseError' })
   })
 
+  test('surfaces a GraphQL error that names no message', async () => {
+    nock(API)
+      .post('/graphql')
+      .reply(200, { data: null, errors: [{ type: 'FORBIDDEN' }] })
+
+    await expect(
+      submit(commandInput({ env: submission(), run: restager() }))
+    ).rejects.toMatchObject({ name: 'GraphqlResponseError' })
+  })
+
   test('surfaces an error that is not from GraphQL', async () => {
     nock(API).post('/graphql').reply(502, {})
 
     await expect(
       submit(commandInput({ env: submission(), run: restager() }))
     ).rejects.toMatchObject({ status: 502 })
+  })
+})
+
+describe('the real timers and script runner', () => {
+  test('wait, and wait one to three seconds between attempts', async () => {
+    await TIMERS.sleep(1)
+
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const wait = TIMERS.jitter()
+
+      expect(wait).toBeGreaterThanOrEqual(1000)
+      expect(wait).toBeLessThanOrEqual(3000)
+    }
+  })
+
+  test('run a program and report its exit code and output', () => {
+    const result = runScript(
+      process.execPath,
+      ['-e', "console.log('main-sha=x'); process.exit(3)"],
+      { encoding: 'utf8' }
+    )
+
+    expect(result.status).toBe(3)
+    expect(result.stdout).toContain('main-sha=x')
   })
 })

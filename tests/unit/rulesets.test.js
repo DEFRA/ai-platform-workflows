@@ -303,6 +303,24 @@ describe('verifyRulesets', () => {
     await expect(verify()).resolves.toBeUndefined()
   })
 
+  test('fails closed when GitHub cannot say which Apps are installed', async () => {
+    nock(API)
+      .get(`${TENANTS}/rulesets`)
+      .query(true)
+      .reply(200, [
+        summary('aip-machine-main', 1),
+        summary('aip-machine-protect', 2)
+      ])
+    nock(API).get(`${TENANTS}/rulesets/1`).query(true).reply(200, machineMain())
+    nock(API)
+      .get(`${TENANTS}/rulesets/2`)
+      .query(true)
+      .reply(200, machineProtect())
+    nock(API).get('/apps/ai-platform-orchestrator').reply(500)
+
+    await expect(verify()).rejects.toMatchObject({ status: 500 })
+  })
+
   test('fails closed when GitHub cannot say', async () => {
     nock(API).get(`${TENANTS}/rulesets`).query(true).reply(500)
 

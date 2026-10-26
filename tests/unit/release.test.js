@@ -272,6 +272,21 @@ describe('moveMajorTag', () => {
       moveMajorTag(input({ AIP_TAG: 'latest' }))
     ).rejects.toMatchObject({ outcome: 'failed' })
   })
+
+  test('refuses a run with no release at all', async () => {
+    await expect(
+      moveMajorTag(commandInput({ env: {} }, { repo: 'ai-platform-workflows' }))
+    ).rejects.toMatchObject({
+      outcome: 'failed',
+      message: 'a release needs a tag vX.Y.Z and a SHA'
+    })
+  })
+
+  test('surfaces any other failure to move the tag', async () => {
+    nock(API).patch(`${WORKFLOWS}/git/refs/tags%2Fv1`).reply(500, {})
+
+    await expect(moveMajorTag(input())).rejects.toMatchObject({ status: 500 })
+  })
 })
 
 describe('submitAutoPins', () => {
@@ -354,5 +369,33 @@ describe('submitAutoPins', () => {
     expect(Object.keys(document)).toEqual([...Object.keys(document)].sort())
     expect(infradev.document.endsWith('}\n')).toBe(true)
     expect(JSON.parse(sandbox.document).previousRelease).toBeNull()
+  })
+
+  test('says so when no environment has autoPin', async () => {
+    nock(API)
+      .get(`${ENVIRONMENTS}/contents/registry.json`)
+      .query({ ref: 'main' })
+      .reply(200, fileContent(registry([registryEntry({ autoPin: false })])))
+
+    await expect(submitAutoPins(input())).resolves.toEqual({ submitted: [] })
+    expect(jobSummary()).toContain('No environment has autoPin.')
+  })
+
+  test('records a dispatch GitHub did not name a run for as started', async () => {
+    nock(API)
+      .get(`${ENVIRONMENTS}/contents/registry.json`)
+      .query({ ref: 'main' })
+      .reply(200, fileContent(registry()))
+    nock(API)
+      .get(`${DEPLOYMENTS}/contents/environments%2Finfradev%2Fplatform.json`)
+      .query({ ref: 'main' })
+      .reply(404)
+    nock(API)
+      .post(`${DEPLOYMENTS}/actions/workflows/submit.yml/dispatches`)
+      .reply(204)
+
+    await submitAutoPins(input())
+
+    expect(jobSummary()).toContain('(`rel-infradev-v0-5-0-98765`): started')
   })
 })

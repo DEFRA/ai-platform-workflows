@@ -349,6 +349,17 @@ async function dispatchWorkflow(octokit, { owner, repo, workflow, inputs }) {
 }
 
 /**
+ * Where the environments' parameters are copied to: AIP_CONFIG, or `config`
+ * in the workspace.
+ *
+ * @param {NodeJS.ProcessEnv} env - The step's variables.
+ * @returns {string} The folder.
+ */
+function configDir(env) {
+  return env.AIP_CONFIG || 'config'
+}
+
+/**
  * Copies the shared parameters, the registry and each environment's
  * parameters from main of ai-platform-environments into a folder laid out
  * like that repository, for the checks and Terraform.
@@ -394,6 +405,7 @@ async function writeSummary(core, heading, lines = []) {
 export {
   API_VERSION,
   changedPaths,
+  configDir,
   dispatchWorkflow,
   folderExists,
   gitopsRepo,

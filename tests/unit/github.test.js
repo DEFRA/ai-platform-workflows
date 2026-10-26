@@ -5,6 +5,7 @@ import nock from 'nock'
 
 import {
   changedPaths,
+  configDir,
   dispatchWorkflow,
   folderExists,
   includesCommit,
@@ -222,6 +223,17 @@ describe('changedPaths', () => {
     ])
   })
 
+  test('lists nothing for a comparison that has no files', async () => {
+    nock(API)
+      .get(`${TENANTS}/compare/b1...h1`)
+      .query(true)
+      .reply(200, { status: 'identical' })
+
+    await expect(
+      changedPaths(createOctokit(), { ...REPO, base: 'b1', head: 'h1' })
+    ).resolves.toEqual([])
+  })
+
   test('is null when the comparison is too large to list', async () => {
     nock(API)
       .get(`${TENANTS}/compare/b1...h1`)
@@ -236,6 +248,14 @@ describe('changedPaths', () => {
     await expect(
       changedPaths(createOctokit(), { ...REPO, base: 'b1', head: 'h1' })
     ).resolves.toBeNull()
+  })
+})
+
+describe('configDir', () => {
+  test('is where the environments are copied to, config unless a step says otherwise', () => {
+    expect(configDir({ AIP_CONFIG: '/tmp/x' })).toBe('/tmp/x')
+    expect(configDir({})).toBe('config')
+    expect(configDir({ AIP_CONFIG: '' })).toBe('config')
   })
 })
 
@@ -358,6 +378,20 @@ describe('dispatchWorkflow', () => {
     ).resolves.toBe(
       'https://github.com/DEFRA/ai-platform-tenants/actions/runs/77'
     )
+  })
+
+  test('returns no URL when GitHub does not say which run it started', async () => {
+    nock(API)
+      .post(`${TENANTS}/actions/workflows/apply.yml/dispatches`)
+      .reply(204)
+
+    await expect(
+      dispatchWorkflow(createOctokit(), {
+        ...REPO,
+        workflow: 'apply.yml',
+        inputs: {}
+      })
+    ).resolves.toBeNull()
   })
 
   test('names a disabled target workflow as the outcome, and never re-enables it', async () => {

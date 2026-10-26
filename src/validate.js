@@ -1,4 +1,9 @@
-import { readJson, writeEnvironmentsConfig, writeSummary } from './github.js'
+import {
+  configDir,
+  readJson,
+  writeEnvironmentsConfig,
+  writeSummary
+} from './github.js'
 import { kindOf, OutcomeError, pinnedRelease, pinPath } from './gitops.js'
 
 const ENVIRONMENT_FOLDER = /^environments\/([a-z][a-z0-9]{1,15})\//
@@ -125,7 +130,7 @@ async function prepareValidation({ github, app, context, core, env }) {
   await writeEnvironmentsConfig(app, {
     owner: context.repo.owner,
     environments: [environment],
-    dir: env.AIP_CONFIG || 'config'
+    dir: configDir(env)
   })
 
   const facts = {

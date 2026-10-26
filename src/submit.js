@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 
-import { writeEnvironmentsConfig, writeSummary } from './github.js'
+import { configDir, writeEnvironmentsConfig, writeSummary } from './github.js'
 import {
   environmentName,
   kindOf,
@@ -321,7 +321,7 @@ async function prepareSubmit({ github, app, context, core, env }) {
   await writeEnvironmentsConfig(app, {
     owner: context.repo.owner,
     environments: [environment],
-    dir: env.AIP_CONFIG || 'config'
+    dir: configDir(env)
   })
   core.exportVariable('AIP_RELEASE', release)
   core.exportVariable('AIP_SHA', sha)
@@ -465,4 +465,4 @@ async function submit(input) {
   return { outcome: 'committed', commit }
 }
 
-export { commitMessage, prepareSubmit, submit }
+export { commitMessage, prepareSubmit, runScript, submit, TIMERS }

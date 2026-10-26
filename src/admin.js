@@ -72,8 +72,7 @@ function isReconcileAll(context, env) {
 
 async function decide({ github, context, env }) {
   const scope = env.AIP_ADMIN_SCOPE
-  const actor = env.AIP_ACTOR || context.actor
-  const triggering = env.AIP_TRIGGERING_ACTOR || actor
+  const { AIP_ACTOR: actor, AIP_TRIGGERING_ACTOR: triggering } = env
   const breakGlass = env.AIP_BREAK_GLASS_INPUTS === 'true'
 
   if (context.eventName !== 'workflow_dispatch') {
@@ -113,8 +112,7 @@ async function decide({ github, context, env }) {
  * `all` true and no break-glass inputs, is exempt.
  *
  * Inputs: AIP_ADMIN_SCOPE (submit, apply or pause), AIP_ENVIRONMENT (checked
- * when given), AIP_ACTOR,
- * AIP_TRIGGERING_ACTOR, AIP_BREAK_GLASS_INPUTS (`true` when allow_destroy or
+ * when given), AIP_ACTOR, AIP_TRIGGERING_ACTOR, AIP_BREAK_GLASS_INPUTS (`true` when allow_destroy or
  * force_unlock is given), AIP_ALL, AIP_WORKFLOW_REF.
  *
  * @param {object} input - Command context from main.js; `github` needs
@@ -122,14 +120,23 @@ async function decide({ github, context, env }) {
  * @returns {Promise<{outcome: string, actor: string}>} Why it passed.
  */
 async function adminCheck(input) {
-  if (!SCOPES.has(input.env.AIP_ADMIN_SCOPE)) {
+  const { env } = input
+
+  if (!SCOPES.has(env.AIP_ADMIN_SCOPE)) {
     throw new OutcomeError('failed', 'admin-check needs a scope')
+  }
+
+  if (!env.AIP_ACTOR || !env.AIP_TRIGGERING_ACTOR) {
+    throw new OutcomeError(
+      'failed',
+      'admin-check needs AIP_ACTOR and AIP_TRIGGERING_ACTOR'
+    )
   }
 
   // A job that names `{environment}-events` makes GitHub create the
   // Environment if it is missing, so the name is checked before any job does.
-  if (input.env.AIP_ENVIRONMENT) {
-    environmentName(input.env.AIP_ENVIRONMENT)
+  if (env.AIP_ENVIRONMENT) {
+    environmentName(env.AIP_ENVIRONMENT)
   }
 
   const result = await decide(input)

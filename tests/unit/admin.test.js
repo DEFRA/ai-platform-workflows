@@ -262,3 +262,20 @@ describe('adminCheck', () => {
     expect(jobSummary()).toContain(APP)
   })
 })
+
+describe('adminCheck without an actor', () => {
+  test.each([
+    [{ AIP_ACTOR: '', AIP_TRIGGERING_ACTOR: 'someone' }],
+    [{ AIP_ACTOR: 'someone', AIP_TRIGGERING_ACTOR: '' }],
+    [{}]
+  ])('refuses %j rather than guess', async (actors) => {
+    await expect(
+      adminCheck(
+        commandInput({ env: { AIP_ADMIN_SCOPE: 'submit', ...actors } })
+      )
+    ).rejects.toMatchObject({
+      outcome: 'failed',
+      message: 'admin-check needs AIP_ACTOR and AIP_TRIGGERING_ACTOR'
+    })
+  })
+})

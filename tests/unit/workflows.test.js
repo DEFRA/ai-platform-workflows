@@ -307,3 +307,32 @@ describe('the publish-event action', () => {
     expect(action).toContain('scripts/publish-event.sh')
   })
 })
+
+describe('settings-drift.yml', () => {
+  const text = read('.github/workflows/settings-drift.yml')
+
+  test('runs daily and on demand, read-only, one at a time', () => {
+    expect(text).toMatch(/^ {2}schedule:\n {4}- cron: '\d+ \d+ \* \* \*'$/m)
+    expect(text).toMatch(/^ {2}workflow_dispatch:$/m)
+    expect(text).toMatch(/^ {4}permissions:\n {6}contents: read$/m)
+    expect(text).toContain('cancel-in-progress: false')
+  })
+
+  test('verifies the settings, then lists the audit log whatever the first found', () => {
+    expect(text).toContain('scripts/setup/repo-settings.sh --verify')
+    expect(text).toMatch(
+      /List the changes the audit log recorded\n {8}if: always\(\)\n {8}run: bash scripts\/setup\/audit-log\.sh/
+    )
+  })
+
+  test('takes the audit token as a secret and the App IDs as variables, never in a script', () => {
+    expect(text).toContain('GH_TOKEN: ${{ secrets.AIP_SETTINGS_AUDIT_TOKEN }}')
+    expect(text).toContain('AIP_SUBMIT_APP_IDS: ${{ vars.AIP_SUBMIT_APP_IDS }}')
+  })
+
+  test('is shellchecked with the other scripts', () => {
+    expect(read('.github/workflows/workflow-checks.yml')).toContain(
+      'shellcheck scripts/*.sh scripts/setup/*.sh'
+    )
+  })
+})

@@ -96,7 +96,7 @@ describe('audit-log.sh', () => {
 
     expect(workspace.commands()).toContainEqual(
       expect.stringContaining(
-        'gh api orgs/DEFRA/audit-log -f phrase=repo:DEFRA/ai-platform-tenants created:>=2026-10-25 --paginate'
+        'gh api -X GET orgs/DEFRA/audit-log -f phrase=repo:DEFRA/ai-platform-tenants created:>=2026-10-25 --paginate'
       )
     )
   })

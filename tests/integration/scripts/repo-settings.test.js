@@ -564,6 +564,43 @@ describe('--verify', () => {
 
   const verify = () => runMachine(['--verify'])
 
+  // aip-machine-main as the script sets it, with the submit Apps bypassing.
+  function liveMain(overrides = {}) {
+    return {
+      ...template('machine-main'),
+      id: 1,
+      bypass_actors: [111, 222].map((id) => ({
+        actor_id: id,
+        actor_type: 'Integration',
+        bypass_mode: 'always'
+      })),
+      ...overrides
+    }
+  }
+
+  test('passes when GitHub adds parameters of its own, and lists in another order', () => {
+    liveMatches()
+    workspace.write(
+      'gh-fixtures/repos_DEFRA_ai-platform-tenants_rulesets_1.json',
+      JSON.stringify(
+        liveMain({
+          rules: template('machine-main').rules.map((rule) => ({
+            ...rule,
+            parameters: {
+              ...rule.parameters,
+              automatic_copilot_code_review_enabled: false
+            }
+          }))
+        })
+      )
+    )
+
+    const result = verify()
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).not.toContain('::error::')
+  })
+
   test('passes, writing nothing, when the repository is as the script would set it', () => {
     liveMatches()
 
@@ -676,6 +713,60 @@ describe('--verify', () => {
         )
       }),
       'ruleset aip-machine-main is not as this script sets it'
+    ],
+    [
+      'the required check was renamed to a longer name that contains it',
+      'rulesets_1',
+      JSON.stringify(
+        liveMain({
+          rules: template('machine-main').rules.map((rule) =>
+            rule.type === 'required_status_checks'
+              ? {
+                  ...rule,
+                  parameters: {
+                    ...rule.parameters,
+                    required_status_checks: [
+                      {
+                        context: 'validate-desired-state / validate-other',
+                        integration_id: 15368
+                      }
+                    ]
+                  }
+                }
+              : rule
+          )
+        })
+      ),
+      'ruleset aip-machine-main is not as this script sets it'
+    ],
+    [
+      'a ruleset also covers another branch',
+      'rulesets_1',
+      JSON.stringify(
+        liveMain({
+          conditions: {
+            ref_name: {
+              include: ['~DEFAULT_BRANCH', 'refs/heads/dev'],
+              exclude: []
+            }
+          }
+        })
+      ),
+      'ruleset aip-machine-main is not as this script sets it'
+    ],
+    [
+      'a ruleset excludes the default branch',
+      'rulesets_2',
+      JSON.stringify({
+        ...template('machine-protect'),
+        conditions: {
+          ref_name: {
+            include: ['~DEFAULT_BRANCH'],
+            exclude: ['~DEFAULT_BRANCH']
+          }
+        }
+      }),
+      'ruleset aip-machine-protect is not as this script sets it'
     ],
     [
       'an Environment lets administrators bypass',

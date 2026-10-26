@@ -177,17 +177,28 @@ verify_ruleset() {
   fi
 
   live="$(read_api "repos/$owner/$repo/rulesets/$id")"
+  # Parameters are compared exactly for the keys this script sets (GitHub may
+  # add defaults of its own), with lists in any order; a check renamed to
+  # something that merely contains the wanted name differs. The branch
+  # condition is compared exactly too.
   if ! jq -e -n --argjson want "$body" --argjson live "$live" '
     def actors: (. // []) | map({actor_id, actor_type, bypass_mode}) | sort_by(.actor_id);
+    def norm: if type == "object" then map_values(norm)
+      elif type == "array" then map(norm) | sort_by(tojson) else . end;
+    def pick($w): if ($w | type) == "object" and type == "object" then
+        . as $l | reduce ($w | keys_unsorted[]) as $k ({}; .[$k] = ($l[$k] | pick($w[$k])))
+      else . end;
+    def scope: {target, ref: (.conditions.ref_name // {} | {include: (.include // []), exclude: (.exclude // [])})} | norm;
     ($live.enforcement == "active")
-    and ($live.target == $want.target)
+    and ($live | scope) == ($want | scope)
     and ($live.bypass_actors | actors) == ($want.bypass_actors | actors)
     and (($live.rules | map(.type) | sort) == ($want.rules | map(.type) | sort))
     and ($want.rules | all(. as $rule
         | $live.rules | any(.type == $rule.type
-            and ((.parameters // {}) | contains($rule.parameters // {})))))
+            and (((.parameters // {}) | pick($rule.parameters // {}) | norm)
+              == (($rule.parameters // {}) | norm)))))
   ' > /dev/null; then
-    differs "$repo" "ruleset $name is not as this script sets it (enforcement, bypass actors or rules)"
+    differs "$repo" "ruleset $name is not as this script sets it (enforcement, branch scope, bypass actors or rules)"
   fi
 }
 

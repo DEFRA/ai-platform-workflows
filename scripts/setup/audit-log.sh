@@ -50,8 +50,9 @@ day="$(date -u -d "@$since" +%Y-%m-%d)"
 found=0
 
 for repo in ${repos//,/ }; do
-  # created: is a whole day, so the hour window is applied below.
-  events="$(gh api "orgs/$owner/audit-log" -f phrase="repo:$owner/$repo created:>=$day" \
+  # created: is a whole day, so the hour window is applied below. -f makes gh
+  # POST unless told otherwise, and the audit log is read with GET.
+  events="$(gh api -X GET "orgs/$owner/audit-log" -f phrase="repo:$owner/$repo created:>=$day" \
     --paginate --jq '.[] | "\(.["@timestamp"]) \(.action) \(.actor // "unknown")"')"
 
   while read -r stamp action actor; do

@@ -3,7 +3,8 @@ description: >
   Sends one status event per operation of a run to the events queue
   (aip.gitops.event/1), for the Portal API. It first keeps each event in the
   run report's events[] (a report that holds only events[] when the run has
-  none), then signs in as the events identity (AIP_EVENTS_CLIENT_ID), gets a
+  none), then signs in as the events identity (AIP_EVENTS_CLIENT_ID, from the
+  job's OIDC token, inside the same deadline as the send), gets a
   token for AIP_EVENTS_AUDIENCE, assumes AIP_EVENTS_ROLE_ARN and sends to
   AIP_EVENTS_QUEUE_URL. Bounded to 10 seconds with 2 retries and
   continue-on-error, so a deploy never waits on it or fails on it. The job
@@ -46,14 +47,6 @@ runs:
         AIP_EVENT_REPORT: ${{ inputs.run-report }}
         AIP_EVENT_FAILURE_CODE: ${{ inputs.failure-code }}
         AIP_EVENT_FAILURE_MESSAGE: ${{ inputs.failure-message }}
-
-    - if: env.AIP_EVENT_FILE != '' && env.AIP_EVENTS_CLIENT_ID != ''
-      continue-on-error: true
-      uses: azure/login@v3
-      with:
-        client-id: ${{ env.AIP_EVENTS_CLIENT_ID }}
-        tenant-id: ${{ env.AZURE_TENANT_ID }}
-        allow-no-subscriptions: true
 
     - if: env.AIP_EVENT_FILE != ''
       continue-on-error: true

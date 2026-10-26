@@ -7,6 +7,8 @@ const QUEUE =
   'https://sqs.eu-west-2.amazonaws.com/000000000000/aip-gitops-events.fifo'
 const ROLE = 'arn:aws:iam::000000000000:role/aip-events'
 const AUDIENCE = 'api://aip-events'
+const CLIENT = '11111111-1111-1111-1111-111111111111'
+const TENANT = '22222222-2222-2222-2222-222222222222'
 
 let workspace
 
@@ -32,6 +34,10 @@ function publish(env = {}) {
     AIP_EVENTS_QUEUE_URL: QUEUE,
     AIP_EVENTS_ROLE_ARN: ROLE,
     AIP_EVENTS_AUDIENCE: AUDIENCE,
+    AIP_EVENTS_CLIENT_ID: CLIENT,
+    AZURE_TENANT_ID: TENANT,
+    ACTIONS_ID_TOKEN_REQUEST_URL: 'https://token.example/oidc?api-version=2',
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'runtime-token',
     GITHUB_RUN_ID: '123',
     GITHUB_RUN_ATTEMPT: '2',
     AIP_PUBLISH_SECONDS: '300',
@@ -50,9 +56,14 @@ describe('publish-event.sh', () => {
     const result = publish()
 
     expect(result.status).toBe(0)
+    expect(calls('curl')).toEqual([
+      'curl https://token.example/oidc?api-version=2&audience=api://AzureADTokenExchange'
+    ])
     expect(calls('az')).toEqual([
+      `az login --service-principal --username ${CLIENT} --tenant ${TENANT} --federated-token fake-oidc --allow-no-subscriptions`,
       `az account get-access-token --resource ${AUDIENCE} --query accessToken --output tsv`
     ])
+    expect(result.stdout).toContain('::add-mask::fake-oidc')
     expect(calls('aws sts')).toEqual([
       expect.stringContaining(
         `--role-arn ${ROLE} --role-session-name aip-events-123-2 --web-identity-token file://`
@@ -97,7 +108,7 @@ describe('publish-event.sh', () => {
     publish()
 
     expect(calls('token-file')).toHaveLength(1)
-    expect(existsSync(join(workspace.dir, 'aip-events-token'))).toBe(false)
+    expect(existsSync(join(workspace.dir, 'aip-events'))).toBe(false)
   })
 
   test('does nothing without events', () => {
@@ -114,7 +125,11 @@ describe('publish-event.sh', () => {
   test.each([
     ['AIP_EVENTS_QUEUE_URL'],
     ['AIP_EVENTS_ROLE_ARN'],
-    ['AIP_EVENTS_AUDIENCE']
+    ['AIP_EVENTS_AUDIENCE'],
+    ['AIP_EVENTS_CLIENT_ID'],
+    ['AZURE_TENANT_ID'],
+    ['ACTIONS_ID_TOKEN_REQUEST_URL'],
+    ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']
   ])('sends nothing, and says so, where %s is not set', (name) => {
     workspace.write('events.json', events('op-00000001'))
 
@@ -177,6 +192,56 @@ describe('publish-event.sh', () => {
       expect(result.status).toBe(0)
       expect(Date.now() - started).toBeLessThan(15_000)
       expect(result.stdout).toContain('::warning::publish-event:')
+    })
+
+    test('gives up within its time budget when the sign-in hangs, before any other call', () => {
+      workspace.write('events.json', events('op-00000001'))
+      const started = Date.now()
+
+      const result = publish({
+        AIP_TEST_SLEEP_CURL: '30',
+        AIP_PUBLISH_SECONDS: '2'
+      })
+
+      expect(result.status).toBe(0)
+      expect(Date.now() - started).toBeLessThan(15_000)
+      expect(result.stdout).toContain(
+        "::warning::publish-event: could not get the job's identity token"
+      )
+      expect(calls('az')).toEqual([])
+      expect(calls('aws')).toEqual([])
+    })
+
+    test('warns and gives up when the identity token cannot be had', () => {
+      workspace.write('events.json', events('op-00000001'))
+
+      const result = publish({ AIP_TEST_FAIL: 'curl' })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain("could not get the job's identity token")
+      expect(calls('az')).toEqual([])
+    })
+
+    test('warns and gives up when the events identity will not sign in', () => {
+      workspace.write('events.json', events('op-00000001'))
+
+      const result = publish({ AIP_TEST_FAIL: 'login' })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain(
+        'could not sign in as the events identity'
+      )
+      expect(calls('aws')).toEqual([])
+    })
+
+    test('warns and gives up when the job identity token comes back empty', () => {
+      workspace.write('events.json', events('op-00000001'))
+
+      const result = publish({ AIP_TEST_CURL_BODY: '{}' })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain("the job's identity token was empty")
+      expect(calls('az')).toEqual([])
     })
   })
 })

@@ -154,6 +154,9 @@ jobs:
       contents: read
       deployments: read
       id-token: write
+      # The apply's events name the pull request of a break-glass commit
+      # (src/events.js, with the job's GITHUB_TOKEN); no other job reads it.
+      pull-requests: read
     strategy:
       fail-fast: false
       matrix:

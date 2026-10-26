@@ -47,6 +47,7 @@ jobs:
           bash scripts/setup/repo-settings.sh --verify
           --app-id "$AIP_RELEASE_APP_ID" --submit-app-ids "$AIP_SUBMIT_APP_IDS"
           --environments "$AIP_ENVIRONMENTS"
+          --repos ai-platform-tenants,ai-platform-deployments
 
       - name: List the changes the audit log recorded
         if: always()

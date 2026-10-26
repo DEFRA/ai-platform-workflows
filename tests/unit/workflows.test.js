@@ -221,6 +221,20 @@ describe('apply-state.yml', () => {
     )
   })
 
+  test('only the apply job may read pull requests, so a break-glass commit keeps its PR URL', () => {
+    expect(job(file, 'apply')).toMatch(
+      /^ {4}permissions:\n {6}contents: read\n {6}deployments: read\n {6}id-token: write\n(?: {6}#.*\n)* {6}pull-requests: read\n/m
+    )
+
+    for (const other of ['access', 'resolve', 'gate', 'tenants']) {
+      expect(job(file, other)).not.toContain('pull-requests')
+    }
+
+    expect(read(`.github/workflows/${file}`)).not.toMatch(
+      /pull-requests: write/
+    )
+  })
+
   test('the ruleset check gets a token that can read the rulesets, and only that', () => {
     const checker = read(`.github/workflows/${file}`).match(
       /id: checker\n(?:.*\n)*?\n/
@@ -420,6 +434,13 @@ describe('settings-drift.yml', () => {
     expect(text).toMatch(
       /List the changes the audit log recorded\n {8}if: always\(\)\n {8}run: bash scripts\/setup\/audit-log\.sh/
     )
+  })
+
+  test('covers only the two state repositories, in the settings check as in the audit log', () => {
+    expect(text).toMatch(
+      /--environments "\$AIP_ENVIRONMENTS"\s+--repos ai-platform-tenants,ai-platform-deployments\n/
+    )
+    expect(text).toContain('audit-log.sh')
   })
 
   test('takes the audit token as a secret and the App IDs as variables, never in a script', () => {

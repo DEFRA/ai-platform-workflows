@@ -239,6 +239,60 @@ describe('apply-state.yml', () => {
       "if: always() && env.AIP_SCRIPTS != '' && env.AIP_HELD != 'true'"
     )
   })
+
+  test('ends a held run as failed, last, so GitHub records no successful Deployment of an unapplied commit', () => {
+    const text = job(file, 'apply')
+    const step =
+      /- name: End a held run as failed\n {8}if: env\.AIP_HELD == 'true'\n {8}uses: [^\n]+\n {8}with:\n {10}command: end-held\n+$/
+
+    expect(text).toMatch(step)
+  })
+})
+
+// "Re-run failed jobs" reuses a successful `access` job, so a repository
+// writer could retry an admin's run and the admin check would still hold the
+// first actor. The privileged job checks again, as its first step, with the
+// actor of this attempt (github.triggering_actor).
+describe.each([
+  ['submit-desired-state.yml', 'submit', 'submit'],
+  ['apply-state.yml', 'apply', 'apply'],
+  ['pause.yml', 'pause', 'pause']
+])('%s, on a re-run of failed jobs', (file, name, scope) => {
+  const text = job(file, name)
+  const first = text
+    .slice(text.search(/^ {4}steps:\n/m))
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('#'))
+
+  test(`the ${name} job checks who ran it as its first step, before a token, an event or Terraform`, () => {
+    expect(first[1]).toBe('      - name: Check who ran this attempt')
+    expect(first.slice(1, 12).join('\n')).toContain('command: admin-check')
+    expect(first.slice(1, 14).join('\n')).toContain(`AIP_ADMIN_SCOPE: ${scope}`)
+  })
+
+  test('with both actors, so the one who re-ran it is the one checked', () => {
+    const step = first.slice(1, 20).join('\n')
+
+    expect(step).toContain('AIP_ACTOR: ${{ github.actor }}')
+    expect(step).toContain(
+      'AIP_TRIGGERING_ACTOR: ${{ github.triggering_actor }}'
+    )
+  })
+})
+
+describe('apply-state.yml, on a re-run of failed jobs', () => {
+  test('the apply job passes the break-glass inputs and the caller workflow to its own check', () => {
+    const step = job('apply-state.yml', 'apply')
+      .split('steps:\n')[1]
+      .split('- id: checker')[0]
+
+    expect(step).toContain(
+      "AIP_BREAK_GLASS_INPUTS: ${{ inputs.allow_destroy || inputs.force_unlock != '' }}"
+    )
+    expect(step).toContain('AIP_ALL: ${{ inputs.all }}')
+    expect(step).toContain('AIP_WORKFLOW_REF: ${{ github.workflow_ref }}')
+    expect(step).toContain('AIP_ENVIRONMENT: ${{ inputs.environment }}')
+  })
 })
 
 describe('pause.yml', () => {
@@ -298,12 +352,11 @@ describe('the publish-event action', () => {
   })
 
   test('never fails a deploy: every step after the build is continue-on-error', () => {
-    expect(action.match(/continue-on-error: true/g)).toHaveLength(3)
+    expect(action.match(/continue-on-error: true/g)).toHaveLength(2)
   })
 
-  test('signs in as the events identity with no subscription, and sends with the script', () => {
-    expect(action).toContain('client-id: ${{ env.AIP_EVENTS_CLIENT_ID }}')
-    expect(action).toContain('allow-no-subscriptions: true')
+  test('signs in inside the script, under its 10 second deadline, not in a step of its own', () => {
+    expect(action).not.toContain('azure/login')
     expect(action).toContain('scripts/publish-event.sh')
   })
 })

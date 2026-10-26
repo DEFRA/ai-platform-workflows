@@ -10,7 +10,7 @@ import {
   resolveRelease,
   submitAutoPins
 } from './release.js'
-import { held, pauseGate } from './pause.js'
+import { held, endHeld, pauseGate } from './pause.js'
 import { prepareSubmit, submit } from './submit.js'
 import { prepareValidation } from './validate.js'
 
@@ -19,6 +19,7 @@ const COMMANDS = {
   'build-event': buildEvent,
   'dispatch-apply': dispatchApply,
   'dispatch-changed-environments': dispatchChangedEnvironments,
+  'end-held': endHeld,
   held,
   'latest-release': latestRelease,
   'merge-release': mergeRelease,

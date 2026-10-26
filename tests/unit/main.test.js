@@ -33,6 +33,7 @@ describe('run', () => {
       'build-event',
       'dispatch-apply',
       'dispatch-changed-environments',
+      'end-held',
       'held',
       'latest-release',
       'merge-release',

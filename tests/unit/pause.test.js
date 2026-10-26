@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { held, heldBack, pauseGate } from '../../src/pause.js'
+import { endHeld, held, heldBack, pauseGate } from '../../src/pause.js'
 import {
   commandInput,
   exportedVariables,
@@ -119,5 +119,30 @@ describe('pauseGate and held', () => {
       outcome: 'failed',
       message: 'the pause check left no record'
     })
+  })
+})
+
+describe('endHeld', () => {
+  test('fails a held run, so GitHub records no successful deployment of a commit nothing applied', async () => {
+    await expect(
+      endHeld(
+        commandInput({
+          env: { AIP_HELD: 'true', AIP_ENVIRONMENT: 'infradev' }
+        })
+      )
+    ).rejects.toMatchObject({
+      outcome: 'paused',
+      message: expect.stringContaining('infradev is paused')
+    })
+  })
+
+  test('does nothing for a run that is not held', async () => {
+    await expect(
+      endHeld(
+        commandInput({
+          env: { AIP_HELD: 'false', AIP_ENVIRONMENT: 'infradev' }
+        })
+      )
+    ).resolves.toEqual({ held: false })
   })
 })

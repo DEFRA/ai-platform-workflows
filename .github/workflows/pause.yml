@@ -56,6 +56,18 @@ jobs:
       AIP_EVENTS_AUDIENCE: ${{ vars.AIP_EVENTS_AUDIENCE }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
     steps:
+      # A re-run of failed jobs reuses a successful access job, so the actor
+      # of this attempt is checked again here, before any token or event.
+      - name: Check who ran this attempt
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
+        with:
+          command: admin-check
+        env:
+          AIP_ADMIN_SCOPE: pause
+          AIP_ENVIRONMENT: ${{ inputs.environment }}
+          AIP_ACTOR: ${{ github.actor }}
+          AIP_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+
       - name: Announce the pause, or the resume
         uses: DEFRA/ai-platform-workflows/.github/actions/publish-event@v2
         with:

@@ -71,4 +71,28 @@ async function held({ core, env }) {
   return { held: text === 'true' }
 }
 
-export { held, heldBack, pauseGate }
+/**
+ * end-held: the last step of a held apply, after the paused event is sent.
+ * The job ran in the real deployment Environment, so GitHub would record the
+ * commit as a successful Deployment although nothing was applied, and
+ * `lastApplied` and the platform-before-tenants guard would trust it. Failing
+ * the job records a failed Deployment instead. Does nothing when not held.
+ *
+ * Inputs: AIP_HELD, AIP_ENVIRONMENT.
+ *
+ * @param {object} input - Command context from main.js.
+ * @returns {Promise<{held: boolean}>} `held: false` when the run goes on.
+ * @throws {OutcomeError} `paused` when the run was held back.
+ */
+async function endHeld({ env }) {
+  if (env.AIP_HELD !== 'true') {
+    return { held: false }
+  }
+
+  throw new OutcomeError(
+    'paused',
+    `${env.AIP_ENVIRONMENT} is paused, so this run applied nothing. It ends as failed so GitHub does not record the commit as deployed; the apply after the environment resumes covers it.`
+  )
+}
+
+export { endHeld, held, heldBack, pauseGate }

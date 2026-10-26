@@ -423,6 +423,8 @@ describe('preflight', () => {
       .query(true)
       .reply(200, {
         enforcement: 'active',
+        target: 'branch',
+        conditions: { ref_name: { include: ['~DEFAULT_BRANCH'], exclude: [] } },
         bypass_actors: [
           { actor_id: 111, actor_type: 'Integration', bypass_mode: 'always' }
         ],
@@ -434,7 +436,17 @@ describe('preflight', () => {
               require_code_owner_review: true
             }
           },
-          { type: 'required_status_checks' }
+          {
+            type: 'required_status_checks',
+            parameters: {
+              required_status_checks: [
+                {
+                  context: 'validate-desired-state / validate',
+                  integration_id: 15368
+                }
+              ]
+            }
+          }
         ]
       })
     nock(API)
@@ -442,6 +454,8 @@ describe('preflight', () => {
       .query(true)
       .reply(200, {
         enforcement: 'active',
+        target: 'branch',
+        conditions: { ref_name: { include: ['~DEFAULT_BRANCH'], exclude: [] } },
         bypass_actors: [],
         rules: [{ type: 'deletion' }, { type: 'non_fast_forward' }]
       })

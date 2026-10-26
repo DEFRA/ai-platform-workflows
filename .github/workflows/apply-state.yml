@@ -180,6 +180,23 @@ jobs:
       ARM_USE_OIDC: 'true'
       ARM_USE_CLI: 'false'
     steps:
+      # A re-run of failed jobs reuses a successful access job, so the actor
+      # of this attempt is checked again here, before any token or Terraform.
+      # AIP_ENVIRONMENT is the input, as in the access job (the job's own is
+      # the matrix leg).
+      - name: Check who ran this attempt
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
+        with:
+          command: admin-check
+        env:
+          AIP_ADMIN_SCOPE: apply
+          AIP_ENVIRONMENT: ${{ inputs.environment }}
+          AIP_ACTOR: ${{ github.actor }}
+          AIP_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          AIP_BREAK_GLASS_INPUTS: ${{ inputs.allow_destroy || inputs.force_unlock != '' }}
+          AIP_ALL: ${{ inputs.all }}
+          AIP_WORKFLOW_REF: ${{ github.workflow_ref }}
+
       # Reads the repository's rulesets, bypass lists included, which needs
       # Administration: read (the apply refuses to run if aip-machine-main or
       # aip-machine-protect changed).
@@ -297,6 +314,15 @@ jobs:
           path: run-report-${{ matrix.environment }}.json
           archive: false
           retention-days: 90
+
+      # A held run applied nothing, but ran in the real Environment, so it ends
+      # as failed: otherwise GitHub records the commit as deployed and
+      # lastApplied trusts it.
+      - name: End a held run as failed
+        if: env.AIP_HELD == 'true'
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
+        with:
+          command: end-held
 
   tenants:
     name: dispatch tenants apply

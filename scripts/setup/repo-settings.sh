@@ -344,7 +344,7 @@ report_disabled_workflows() {
 }
 
 configure_machine() {
-  local repo="$1" apps_json env
+  local repo="$1" apps_json env main_body
 
   if [[ -z "$submit_apps" ]]; then
     echo "::error::--submit-app-ids is needed for $repo: the Apps that run submit bypass aip-machine-main"
@@ -353,11 +353,18 @@ configure_machine() {
 
   apps_json="$(jq -n -c --arg ids "$submit_apps" '[$ids | split(",")[] | tonumber]')"
 
+  main_body="$(ruleset_body machine-main '[]' "$(app_bypass "$submit_apps" always)")"
+  # Checked before the first write, so a refusal still leaves nothing changed.
+  assert_bypass "$repo" "$main_body" "$apps_json"
+
+  # The no-bypass protection ruleset (deletion, force push) goes first: replacing
+  # a v1 main ruleset drops those rules, so a run that fails between the two
+  # writes must never leave the repository without them.
+  upsert_ruleset "$repo" "$(ruleset_body machine-protect '[]' '[]')" '[]'
+
   # The Apps that run submit commit to main directly, so they alone bypass the
   # pull-request rule; nobody else does, administrators included.
-  upsert_ruleset "$repo" \
-    "$(ruleset_body machine-main '[]' "$(app_bypass "$submit_apps" always)")" "$apps_json"
-  upsert_ruleset "$repo" "$(ruleset_body machine-protect '[]' '[]')" '[]'
+  upsert_ruleset "$repo" "$main_body" "$apps_json"
 
   for env in ${environments//,/ }; do
     ensure_environment "$repo" "$env"

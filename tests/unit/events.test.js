@@ -537,8 +537,8 @@ describe('buildEvents', () => {
 
     expect(events).toHaveLength(1)
     expect(events[0]).toMatchObject({
-      groupId: COMMIT,
-      deduplicationId: `${COMMIT}:deployed:4242:2`
+      groupId: 'infradev',
+      deduplicationId: 'infradev:deployed:4242:2'
     })
     expect(events[0].body).toMatchObject({
       operationId: null,
@@ -549,6 +549,27 @@ describe('buildEvents', () => {
       resources: []
     })
     valid(events)
+  })
+
+  test('the legs of a multi-environment run with nothing new to apply send distinct events, though they share the commit, run and attempt', () => {
+    const legs = ['infradev', 'dev'].flatMap((environment) =>
+      buildEvents({
+        status: 'deployed',
+        report: report({ operations: [] }),
+        facts: applyFacts({ environment }),
+        commits: COMMITS,
+        now: NOW
+      })
+    )
+
+    expect(legs.map((event) => event.groupId)).toEqual(['infradev', 'dev'])
+    expect(new Set(legs.map((event) => event.deduplicationId)).size).toBe(2)
+    expect(legs.map((event) => event.body.eventId)).toEqual([
+      'infradev:deployed:4242:2',
+      'dev:deployed:4242:2'
+    ])
+    expect(legs.map((event) => event.body.commitSha)).toEqual([COMMIT, COMMIT])
+    valid(legs)
   })
 
   test('a failed apply with no report is about the environment alone', () => {
@@ -1085,6 +1106,79 @@ describe('buildEvent', () => {
       )
     ).resolves.toEqual({ events: 0 })
     expect(exportedVariables().AIP_EVENT_FILE).toBe('')
+  })
+
+  // A client with the GitOps action's retry behaviour (@octokit/plugin-retry
+  // with retries: 3, a per-request `request.retries` overriding it), whose
+  // GitHub answers 500 to `failOn`; it counts the requests that reach GitHub.
+  function retryingGitHub(failOn, requests) {
+    const octokit = new Octokit({
+      auth: 'github-token',
+      request: {
+        fetch: (url, options) => {
+          if (!String(url).includes(failOn)) {
+            return fetch(url, options)
+          }
+          requests.push(String(url))
+          return Promise.resolve(new Response('{}', { status: 500 }))
+        }
+      }
+    })
+    octokit.hook.wrap('request', async (request, options) => {
+      const retries = options.request?.retries ?? 3
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await request(options)
+        } catch (error) {
+          if (attempt >= retries) {
+            throw error
+          }
+        }
+      }
+    })
+    return octokit
+  }
+
+  test('does not retry the commit lookup, which could outlive the reporting budget', async () => {
+    vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
+    const file = join(process.env.RUNNER_TEMP, 'retry-commit-report.json')
+    writeFileSync(file, JSON.stringify(report()))
+    const requests = []
+
+    await expect(
+      buildEvent(
+        commandInput({
+          github: retryingGitHub(`/commits/${COMMIT}`, requests),
+          env: applyEnv(file)
+        })
+      )
+    ).resolves.toEqual({ events: 0 })
+
+    expect(requests).toHaveLength(1)
+  })
+
+  test('does not retry the pull request lookup, which could outlive the reporting budget', async () => {
+    vi.stubEnv('GITHUB_ACTOR', BY_APP.actor)
+    const file = join(process.env.RUNNER_TEMP, 'retry-pulls-report.json')
+    writeFileSync(
+      file,
+      JSON.stringify(
+        report({ operations: [{ sha: OTHER_COMMIT, operationIds: [] }] })
+      )
+    )
+    commitReply(OTHER_COMMIT)
+    const requests = []
+
+    await expect(
+      buildEvent(
+        commandInput({
+          github: retryingGitHub('/pulls', requests),
+          env: applyEnv(file)
+        })
+      )
+    ).resolves.toEqual({ events: 1 })
+
+    expect(requests).toHaveLength(1)
   })
 
   test('takes no operation IDs from a step that sets none', async () => {

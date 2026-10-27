@@ -165,9 +165,12 @@ function eventFor(unit, status, facts, extras) {
     throw new Error('the run report has no appliedSha for the deployed event')
   }
 
+  // An operation, or the commit an apply names; a run with neither (nothing new
+  // to apply) is about its environment, which keeps the legs of an `all` run
+  // apart: they share the applied commit, the run and the attempt.
   const groupId =
     operationId ??
-    (facts.source === 'apply' && commitSha ? commitSha : facts.environment)
+    (facts.source === 'apply' && commit ? commitSha : facts.environment)
   const eventId = `${groupId}:${status}:${facts.runId}:${facts.runAttempt}`
   const reason = failureReason(status, extras.failure, extras.report)
   const failed = status === 'deploy-failed'
@@ -305,7 +308,7 @@ async function pullRequestsOf(github, repo, report, signal) {
         await github.rest.repos.listPullRequestsAssociatedWithCommit({
           ...repo,
           commit_sha: commit.sha,
-          request: { signal }
+          request: { signal, retries: 0 }
         })
 
       found[commit.sha] = data[0]?.html_url ?? null
@@ -339,7 +342,7 @@ async function commitsOf(github, repo, ids, report, facts, signal) {
     const { data } = await github.rest.repos.getCommit({
       ...repo,
       ref: sha,
-      request: { signal }
+      request: { signal, retries: 0 }
     })
 
     found[sha] = {

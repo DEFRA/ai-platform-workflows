@@ -203,6 +203,33 @@ describe('repo-settings.sh', () => {
     expect(result.stdout).toContain('ruleset aip-machine-protect created')
   })
 
+  test('writes the no-bypass protection ruleset before it replaces a v1 main ruleset, so a failed run never leaves the repository unprotected', () => {
+    workspace.write(
+      'gh-fixtures/repos_DEFRA_ai-platform-deployments_rulesets.json',
+      JSON.stringify([{ id: 2, name: 'aip-machine-main' }])
+    )
+
+    const result = run([
+      '--environments',
+      'infradev',
+      '--submit-app-ids',
+      SUBMIT_APPS,
+      '--repos',
+      'ai-platform-deployments'
+    ])
+
+    expect(result.status).toBe(0)
+    const rulesetWrites = writes().filter((line) => line.includes('/rulesets'))
+    expect(rulesetWrites).toEqual([
+      'gh api -X POST repos/DEFRA/ai-platform-deployments/rulesets --input -',
+      'gh api -X PUT repos/DEFRA/ai-platform-deployments/rulesets/2 --input -'
+    ])
+    const names = bodies().map((body) => body.name)
+    expect(names.indexOf('aip-machine-protect')).toBeLessThan(
+      names.indexOf('aip-machine-main')
+    )
+  })
+
   test('gives a human repository its checks, the App as the release bypass actor and the tag ruleset', () => {
     const result = run([
       '--environments',

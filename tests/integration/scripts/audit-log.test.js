@@ -54,6 +54,7 @@ describe('audit-log.sh', () => {
     'repo.actions_enabled',
     'repo.add_member',
     'repo.update_member',
+    'repo.update_default_branch',
     'team.add_repository',
     'team.update_repository_permission',
     'public_key.create',

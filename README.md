@@ -187,7 +187,7 @@ nothing re-enables it. The script lists any disabled workflow it finds.
 
 [`settings-drift.yml`](.github/workflows/settings-drift.yml) runs `repo-settings.sh --verify` daily, then
 [`audit-log.sh`](scripts/setup/audit-log.sh), which lists every ruleset, branch protection, Environment, Actions
-settings, collaborator, team access, deploy key and webhook change in the last 26 hours, and fails the run on any
+settings, collaborator, team access, deploy key, webhook and default branch change in the last 26 hours, and fails the run on any
 difference or change. It needs a read-only `AIP_SETTINGS_AUDIT_TOKEN` secret and the variables `AIP_RELEASE_APP_ID`,
 `AIP_SUBMIT_APP_IDS` and `AIP_ENVIRONMENTS`. An admin's own change, an `AIP_PAUSED` update included, shows too.
 

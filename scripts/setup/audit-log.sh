@@ -2,7 +2,7 @@
 # The audit-log half of the daily settings drift check (plan section 15,
 # mitigation 4): lists what changed in the state repositories' rulesets,
 # branch protection, Environments, Actions settings, collaborators and team
-# access, deploy keys and webhooks, and exits 1 if there is anything, so the
+# access, deploy keys, webhooks and the default branch, and exits 1 if there is anything, so the
 # workflow fails and GitHub tells its watchers. An admin's own change shows
 # too (an AIP_PAUSED change is an environment.update_actions_variable); the
 # point is that none goes unseen.
@@ -15,9 +15,11 @@
 # from github/docs, src/audit-logs/data/ghec/organization.json, 26 October
 # 2026): repository_ruleset.*, protected_branch.*, required_status_check.*,
 # environment.*, hook.*, public_key.create and .delete (a deploy key added or
-# removed), repo.add_member, .remove_member and .update_member, team.add_repository,
-# .remove_repository and .update_repository_permission, and the repo Actions
-# settings events.
+# removed), repo.add_member, .remove_member and .update_member,
+# repo.update_default_branch (both machine rulesets target ~DEFAULT_BRANCH, so
+# moving the default branch away from main and back would leave main
+# unprotected unseen), team.add_repository, .remove_repository and
+# .update_repository_permission, and the repo Actions settings events.
 # In: AIP_NOW (epoch seconds; for tests), GH_TOKEN.
 set -euo pipefail
 
@@ -41,7 +43,7 @@ fi
 
 # What counts: every event of these kinds; protected_branch.rejected_ref_update
 # is a refused push, not a change.
-watched='^(repository_ruleset\.|protected_branch\.|required_status_check\.|environment\.|hook\.|public_key\.(create|delete)$|repo\.(add_member|remove_member|update_member|actions_enabled|update_actions_settings|update_actions_access_settings|update_actions_secret|update_actions_variable|set_actions_[a-z_]+)$|team\.(add_repository|remove_repository|update_repository_permission)$)'
+watched='^(repository_ruleset\.|protected_branch\.|required_status_check\.|environment\.|hook\.|public_key\.(create|delete)$|repo\.(add_member|remove_member|update_member|update_default_branch|actions_enabled|update_actions_settings|update_actions_access_settings|update_actions_secret|update_actions_variable|set_actions_[a-z_]+)$|team\.(add_repository|remove_repository|update_repository_permission)$)'
 ignored='^protected_branch\.rejected_ref_update$'
 
 now="${AIP_NOW:-$(date -u +%s)}"

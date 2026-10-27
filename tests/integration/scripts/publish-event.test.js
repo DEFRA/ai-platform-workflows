@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { createWorkspace } from '../../helpers/scripts.js'
 
 const QUEUE =
-  'https://sqs.eu-west-2.amazonaws.com/000000000000/aip-gitops-events.fifo'
+  'https://sqs.eu-west-2.amazonaws.com/000000000000/aip_gitops_events.fifo'
 const ROLE = 'arn:aws:iam::000000000000:role/aip-events'
 const AUDIENCE = 'api://aip-events'
 const CLIENT = '11111111-1111-1111-1111-111111111111'

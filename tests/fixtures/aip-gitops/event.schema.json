@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "event.schema.json",
   "title": "AI Platform GitOps event",
-  "description": "aip.gitops.event/1: a status the workflows or the worker's reconciler send to aip-gitops-events.fifo. SQS group: the operation ID, the commit SHA for break-glass, or the environment for pause. SQS deduplication ID: eventId. Additive changes only; a breaking change is a new identifier, aip.gitops.event/2. Date-times use the date-time format, so a validator needs ajv-formats or its equivalent.",
+  "description": "aip.gitops.event/1: a status the workflows send straight to the backend's SQS FIFO queue aip_gitops_events.fifo (federated identity) and the worker's reconciler publishes to its SNS FIFO topic aip_gitops_events_worker.fifo, which is subscribed to that queue. SQS group: the operation ID, the commit SHA for break-glass, or the environment for pause. SQS deduplication ID: eventId. Additive changes only; a breaking change is a new identifier, aip.gitops.event/2. Date-times use the date-time format, so a validator needs ajv-formats or its equivalent.",
   "type": "object",
   "additionalProperties": false,
   "required": [

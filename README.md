@@ -202,8 +202,8 @@ opened the pull request and wrote every commit on it.
 
 The release workflows use this repository's own actions through `@v2`. The `aip-release-tags` ruleset lets only the
 release App create `v*` tags, so nobody can create the first `v2` by hand. The release that makes `v2.0.0` therefore
-pins those three references to the commit that started v2 (`75aeb13`), and the App's release creates `v2.0.0` and
-moves `v2`. A follow-up change returns the references to `@v2`.
+pins the four references in `release.yml` and `release-merge.yml` to the commit that started v2 (`75aeb13`), and the
+App's release creates `v2.0.0` and moves `v2`. A follow-up change returns the references to `@v2`.
 
 `v1` is untouched and stays for callers that have not moved.
 

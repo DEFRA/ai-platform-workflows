@@ -200,14 +200,10 @@ failed after release-please made the release finds that release and finishes the
 Only the release App may push to `release-please--branches--main`, and the release merge checks that the App
 opened the pull request and wrote every commit on it.
 
-The release workflows use this repository's own actions through `@v2`, so `v2` must exist before the release that
-makes `v2.0.0`. Once, right after the pull request that starts v2 merges, point it at `main`; the release then moves
-it to `v2.0.0`:
-
-```sh
-gh api repos/DEFRA/ai-platform-workflows/git/refs -f ref=refs/tags/v2 \
-  -f sha="$(gh api repos/DEFRA/ai-platform-workflows/git/ref/heads/main --jq .object.sha)"
-```
+The release workflows use this repository's own actions through `@v2`. The `aip-release-tags` ruleset lets only the
+release App create `v*` tags, so nobody can create the first `v2` by hand. The release that makes `v2.0.0` therefore
+pins the four references in `release.yml` and `release-merge.yml` to the commit that started v2 (`75aeb13`), and the
+App's release creates `v2.0.0` and moves `v2`. A follow-up change returns the references to `@v2`.
 
 `v1` is untouched and stays for callers that have not moved.
 

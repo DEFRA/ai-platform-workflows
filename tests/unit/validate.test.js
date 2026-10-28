@@ -92,8 +92,7 @@ describe('prepareValidation', () => {
       AIP_HEAD_SHA: HEAD,
       AIP_AUTHOR: 'ai-platform-orchestrator[bot]',
       AIP_LABELS: 'gitops,env:infradev',
-      AIP_APPROVERS: 'engineer-1',
-      AIP_OPERATION_ID: '000000000000000000000001'
+      AIP_APPROVERS: 'engineer-1'
     })
     expect(jobSummary()).toContain('### infradev at v0.4.0')
   })
@@ -124,12 +123,11 @@ describe('prepareValidation', () => {
     ).resolves.toEqual({ environment: 'infradev', release: 'v0.4.0' })
     expect(exportedVariables()).toMatchObject({
       AIP_KIND: 'pins',
-      AIP_OPERATION_ID: ''
+      AIP_APPROVERS: ''
     })
   })
 
   test.each([
-    [[pullRequestFile('README.md')], 0],
     [
       [
         pullRequestFile('environments/infradev/alpha.json'),
@@ -145,13 +143,99 @@ describe('prepareValidation', () => {
         )
       ],
       2
-    ]
+    ],
+    [[pullRequestFile('environments/README.md')], 0],
+    [[pullRequestFile('README.md'), pullRequestFile('environments/x.json')], 0]
   ])('refuses a pull request that changes %j', async (files, count) => {
     changedFiles(TENANTS, files)
 
     await expect(prepareValidation(input())).rejects.toMatchObject({
       outcome: 'checks-failed',
       message: expect.stringContaining(`this one changes ${count}`)
+    })
+  })
+
+  describe('a pull request that changes nothing under environments/', () => {
+    const files = [
+      pullRequestFile('.github/CODEOWNERS'),
+      pullRequestFile('README.md')
+    ]
+
+    test('passes once someone has approved its head, and skips the file checks', async () => {
+      changedFiles(TENANTS, files)
+      reviews(TENANTS, [
+        review('admin-1', 'APPROVED', HEAD),
+        review('admin-2', 'COMMENTED', HEAD)
+      ])
+
+      await expect(prepareValidation(input())).resolves.toEqual({
+        environment: null,
+        release: null,
+        outcome: 'approved'
+      })
+      expect(exportedVariables()).toEqual({ AIP_SKIP_VALIDATION: 'true' })
+      expect(jobSummary()).toContain('### approved')
+      expect(jobSummary()).toContain('admin-1')
+    })
+
+    test('keeps an approval that a later comment-only review did not withdraw', async () => {
+      changedFiles(TENANTS, files)
+      reviews(TENANTS, [
+        review('admin-1', 'APPROVED', HEAD),
+        review('admin-1', 'COMMENTED', HEAD)
+      ])
+
+      await expect(prepareValidation(input())).resolves.toMatchObject({
+        outcome: 'approved'
+      })
+      expect(jobSummary()).toContain('admin-1')
+    })
+
+    test.each([
+      ['has no review', []],
+      ['only has a comment', [review('a', 'COMMENTED', HEAD)]],
+      [
+        'was approved only before its head moved',
+        [review('a', 'APPROVED', 'old')]
+      ],
+      [
+        'had its approval withdrawn',
+        [review('a', 'APPROVED', HEAD), review('a', 'CHANGES_REQUESTED', HEAD)]
+      ],
+      [
+        'had its approval dismissed',
+        [review('a', 'APPROVED', HEAD), review('a', 'DISMISSED', HEAD)]
+      ]
+    ])('fails closed when it %s', async (_why, list) => {
+      changedFiles(TENANTS, files)
+      reviews(TENANTS, list)
+
+      await expect(prepareValidation(input())).rejects.toMatchObject({
+        outcome: 'checks-failed',
+        message:
+          'A pull request that changes nothing under environments/ needs an approving review of its head commit.'
+      })
+      expect(exportedVariables()).toEqual({})
+    })
+
+    test('is still validated when it also changes an environment', async () => {
+      changedFiles(TENANTS, [
+        ...files,
+        pullRequestFile('environments/infradev/alpha.json')
+      ])
+      nock(API)
+        .get(`${DEPLOYMENTS}/contents/${PIN}`)
+        .query({ ref: 'main' })
+        .reply(200, fileContent(pin()))
+      tagResolves()
+      reviews(TENANTS, [])
+      environmentsRepo()
+
+      await expect(prepareValidation(input())).resolves.toEqual({
+        environment: 'infradev',
+        release: 'v0.4.0'
+      })
+      expect(exportedVariables()).not.toHaveProperty('AIP_SKIP_VALIDATION')
     })
   })
 })

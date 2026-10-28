@@ -1,0 +1,335 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "event.schema.json",
+  "title": "AI Platform GitOps event",
+  "description": "aip.gitops.event/1: a status the workflows send straight to the backend's SQS FIFO queue aip_gitops_events.fifo (federated identity) and the worker's reconciler publishes to its SNS FIFO topic aip_gitops_events_worker.fifo, which is subscribed to that queue. SQS group: the operation ID, the commit SHA for break-glass, or the environment for pause. SQS deduplication ID: eventId. Additive changes only; a breaking change is a new identifier, aip.gitops.event/2. Date-times use the date-time format, so a validator needs ajv-formats or its equivalent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "eventId",
+    "environment",
+    "team",
+    "path",
+    "action",
+    "status",
+    "timestamp",
+    "source",
+    "requestedBy",
+    "repository",
+    "traceparent",
+    "cdpRequestId",
+    "operationId",
+    "runId",
+    "runAttempt",
+    "runUrl"
+  ],
+  "properties": {
+    "schema": { "const": "aip.gitops.event/1" },
+    "eventId": {
+      "description": "{operationId or commitSha or environment}:{status}:{runId}:{runAttempt}. Also the SQS deduplication ID, so a repeat collapses.",
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*:(requested|checks-failed|committed|deploying|deployed|deploy-failed|paused|resumed):[0-9]+:[0-9]+$"
+    },
+    "environment": { "$ref": "#/$defs/environment" },
+    "team": {
+      "description": "The team slug, or platform or tenants for a pin; null when the event has no operation.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/teamSlug" }]
+    },
+    "path": {
+      "description": "environments/{env}/{slug}.json or environments/{env}/platform.json; null when the event has no operation.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/path" }]
+    },
+    "action": {
+      "description": "write, remove or revert for an operation; break-glass for an engineer's commit; apply for a run with no team-file action (a manual apply, reconcile-all); pause for pause.yml.",
+      "enum": ["write", "remove", "revert", "break-glass", "apply", "pause"]
+    },
+    "status": {
+      "enum": [
+        "requested",
+        "checks-failed",
+        "committed",
+        "deploying",
+        "deployed",
+        "deploy-failed",
+        "paused",
+        "resumed"
+      ]
+    },
+    "timestamp": { "$ref": "#/$defs/dateTime" },
+    "source": { "enum": ["submit", "apply", "pause", "reconciler"] },
+    "requestedBy": { "$ref": "#/$defs/principal" },
+    "repository": { "$ref": "#/$defs/repository" },
+    "traceparent": {
+      "description": "The W3C traceparent the request carried; null when it carried none.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/traceparent" }]
+    },
+    "cdpRequestId": {
+      "description": "The CDP request ID the request carried; null when it carried none.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/cdpRequestId" }]
+    },
+    "operationId": {
+      "description": "Null for break-glass, pause and a run with no operation.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/operationId" }]
+    },
+    "runId": { "type": "integer", "minimum": 1 },
+    "runAttempt": { "type": "integer", "minimum": 1 },
+    "runUrl": {
+      "type": "string",
+      "pattern": "^https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/actions/runs/[0-9]+(/attempts/[0-9]+)?$"
+    },
+    "commitSha": {
+      "description": "From committed onwards, and for break-glass.",
+      "$ref": "#/$defs/sha"
+    },
+    "committedAt": { "$ref": "#/$defs/dateTime" },
+    "pullRequestUrl": {
+      "description": "break-glass only.",
+      "type": "string",
+      "pattern": "^https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[0-9]+$"
+    },
+    "failureReason": {
+      "description": "checks-failed and deploy-failed only. retryable is true exactly for stale-revision, paused and commit-conflict on checks-failed, and for paused on deploy-failed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$" },
+        "message": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "appliedSha": {
+      "description": "deployed only.",
+      "$ref": "#/$defs/sha"
+    },
+    "resources": {
+      "description": "deployed only: what the apply published for the operation; empty for a removal.",
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "name", "id"],
+        "properties": {
+          "type": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "id": { "type": "string", "minLength": 1, "maxLength": 1000 }
+        }
+      }
+    },
+    "failingTeams": {
+      "description": "deploy-failed only: the teams whose changes the apply could not make.",
+      "type": "array",
+      "maxItems": 500,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/teamSlug" }
+    },
+    "attributable": {
+      "description": "deploy-failed only: whether the failure belongs to the team's own change.",
+      "type": "boolean"
+    }
+  },
+  "allOf": [
+    {
+      "description": "checks-failed and deploy-failed say why, and nothing else does.",
+      "if": {
+        "required": ["status"],
+        "properties": {
+          "status": { "enum": ["checks-failed", "deploy-failed"] }
+        }
+      },
+      "then": { "required": ["failureReason"] },
+      "else": { "properties": { "failureReason": false } }
+    },
+    {
+      "description": "A checks-failed is retryable for exactly three codes.",
+      "if": {
+        "required": ["status"],
+        "properties": { "status": { "const": "checks-failed" } }
+      },
+      "then": {
+        "properties": {
+          "failureReason": {
+            "type": "object",
+            "if": {
+              "required": ["code"],
+              "properties": {
+                "code": {
+                  "enum": ["stale-revision", "paused", "commit-conflict"]
+                }
+              }
+            },
+            "then": { "properties": { "retryable": { "const": true } } },
+            "else": { "properties": { "retryable": { "const": false } } }
+          }
+        }
+      }
+    },
+    {
+      "description": "A deploy-failed is retryable for the code paused alone.",
+      "if": {
+        "required": ["status"],
+        "properties": { "status": { "const": "deploy-failed" } }
+      },
+      "then": {
+        "properties": {
+          "failureReason": {
+            "type": "object",
+            "if": {
+              "required": ["code"],
+              "properties": { "code": { "const": "paused" } }
+            },
+            "then": { "properties": { "retryable": { "const": true } } },
+            "else": { "properties": { "retryable": { "const": false } } }
+          }
+        }
+      }
+    },
+    {
+      "description": "The commit, from committed onwards and for break-glass.",
+      "if": {
+        "anyOf": [
+          {
+            "required": ["status"],
+            "properties": {
+              "status": { "enum": ["committed", "deploying", "deployed"] }
+            }
+          },
+          {
+            "required": ["action"],
+            "properties": { "action": { "const": "break-glass" } }
+          }
+        ]
+      },
+      "then": { "required": ["commitSha", "committedAt"] }
+    },
+    {
+      "description": "The commit SHA and its time travel together.",
+      "dependentRequired": {
+        "commitSha": ["committedAt"],
+        "committedAt": ["commitSha"]
+      }
+    },
+    {
+      "description": "deployed reports what was applied.",
+      "if": {
+        "required": ["status"],
+        "properties": { "status": { "const": "deployed" } }
+      },
+      "then": { "required": ["appliedSha", "resources"] },
+      "else": { "properties": { "appliedSha": false, "resources": false } }
+    },
+    {
+      "description": "deploy-failed reports who failed and whether it is the team's own change.",
+      "if": {
+        "required": ["status"],
+        "properties": { "status": { "const": "deploy-failed" } }
+      },
+      "then": { "required": ["failingTeams", "attributable"] },
+      "else": { "properties": { "failingTeams": false, "attributable": false } }
+    },
+    {
+      "description": "break-glass is an engineer's commit: no operation, and the pull request that carried it.",
+      "if": {
+        "required": ["action"],
+        "properties": { "action": { "const": "break-glass" } }
+      },
+      "then": {
+        "required": ["pullRequestUrl"],
+        "properties": { "operationId": { "type": "null" } }
+      },
+      "else": { "properties": { "pullRequestUrl": false } }
+    },
+    {
+      "description": "pause.yml sends paused and resumed for the environment.",
+      "if": {
+        "required": ["action"],
+        "properties": { "action": { "const": "pause" } }
+      },
+      "then": {
+        "properties": {
+          "status": { "enum": ["paused", "resumed"] },
+          "source": { "const": "pause" },
+          "operationId": { "type": "null" },
+          "team": { "type": "null" },
+          "path": { "type": "null" }
+        }
+      }
+    },
+    {
+      "description": "Nothing but pause.yml sends paused and resumed.",
+      "if": {
+        "required": ["status"],
+        "properties": { "status": { "enum": ["paused", "resumed"] } }
+      },
+      "then": { "properties": { "action": { "const": "pause" } } }
+    },
+    {
+      "description": "A team-file action has an operation.",
+      "if": {
+        "required": ["action"],
+        "properties": { "action": { "enum": ["write", "remove", "revert"] } }
+      },
+      "then": { "properties": { "operationId": { "type": "string" } } }
+    },
+    {
+      "description": "An event with an operation names its team and path.",
+      "if": {
+        "required": ["operationId"],
+        "properties": { "operationId": { "type": "string" } }
+      },
+      "then": {
+        "properties": {
+          "team": { "type": "string" },
+          "path": { "type": "string" }
+        }
+      }
+    },
+    {
+      "description": "The team and the path travel together: both, or neither, so an event never names half a target.",
+      "if": {
+        "required": ["team"],
+        "properties": { "team": { "type": "null" } }
+      },
+      "then": { "properties": { "path": { "type": "null" } } },
+      "else": { "properties": { "path": { "type": "string" } } }
+    }
+  ],
+  "$defs": {
+    "environment": { "type": "string", "pattern": "^[a-z][a-z0-9]{1,15}$" },
+    "teamSlug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,22}[a-z0-9]$"
+    },
+    "path": {
+      "type": "string",
+      "pattern": "^environments/[a-z][a-z0-9]{1,15}/[a-z][a-z0-9-]{1,22}[a-z0-9]\\.json$"
+    },
+    "operationId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "principal": {
+      "description": "Exactly one identity, never a name or an email address: entra:{object ID}, github:{user ID} or app:{name}.",
+      "type": "string",
+      "pattern": "^(entra:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|github:[1-9][0-9]{0,19}|app:[a-z][a-z0-9-]{0,38})$"
+    },
+    "repository": {
+      "description": "owner/name of the state repository.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+    },
+    "traceparent": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
+    },
+    "cdpRequestId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+    },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "dateTime": { "type": "string", "format": "date-time" }
+  }
+}

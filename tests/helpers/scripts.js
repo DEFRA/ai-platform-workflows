@@ -30,9 +30,44 @@ esac
 [[ "$*" != *"\${AIP_TEST_FAIL:-none}"* ]]
 `
 
-// Records each call to the Azure CLI; a call matching AIP_TEST_FAIL fails.
+// Records each call to the Azure CLI; a call matching AIP_TEST_FAIL fails,
+// and one that asks for a token prints a fake one after AIP_TEST_SLEEP.
 const FAKE_AZ = `#!/usr/bin/env bash
 printf 'az %s\\n' "$*" >> "$AIP_TEST_LOG"
+[[ -n "\${AIP_TEST_SLEEP:-}" && "$*" == *get-access-token* ]] && exec sleep "$AIP_TEST_SLEEP"
+[[ "$*" == *get-access-token* ]] && echo fake-entra-token
+[[ "$*" != *"\${AIP_TEST_FAIL:-none}"* ]]
+`
+
+// Records each call to curl, as its URL only (the request header holds a
+// token), and writes a fake OIDC token to the --output file; the call fails
+// when AIP_TEST_FAIL is "curl" and waits AIP_TEST_SLEEP_CURL seconds.
+const FAKE_CURL = `#!/usr/bin/env bash
+out=''
+for ((i = 1; i <= $#; i++)); do
+  [[ "\${!i}" == --output ]] && { j=$((i + 1)); out="\${!j}"; }
+done
+printf 'curl %s\\n' "\${@: -1}" >> "$AIP_TEST_LOG"
+[[ -n "\${AIP_TEST_SLEEP_CURL:-}" ]] && exec sleep "$AIP_TEST_SLEEP_CURL"
+[[ "\${AIP_TEST_FAIL:-none}" == curl ]] && exit 22
+body="\${AIP_TEST_CURL_BODY:-}"
+[[ -z "$body" ]] && body='{"value":"fake-oidc"}'
+[[ -n "$out" ]] && echo "$body" > "$out"
+exit 0
+`
+
+// Records each call to the AWS CLI, and the credentials a send used; a call
+// matching AIP_TEST_FAIL fails, and every call waits AIP_TEST_SLEEP seconds.
+const FAKE_AWS = `#!/usr/bin/env bash
+printf 'aws %s\\n' "$*" >> "$AIP_TEST_LOG"
+[[ -n "\${AIP_TEST_SLEEP:-}" ]] && exec sleep "$AIP_TEST_SLEEP"
+if [[ "$*" == *assume-role-with-web-identity* ]]; then
+  for arg in "$@"; do
+    [[ "$arg" == file://* ]] && printf 'token-file %s\\n' "$(cat "\${arg#file://}")" >> "$AIP_TEST_LOG"
+  done
+  echo '{"AccessKeyId":"AKIAFAKE","SecretAccessKey":"fake-secret","SessionToken":"fake-session"}'
+fi
+[[ "$*" == *send-message* ]] && printf 'credentials %s %s %s\\n' "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" >> "$AIP_TEST_LOG"
 [[ "$*" != *"\${AIP_TEST_FAIL:-none}"* ]]
 `
 
@@ -42,6 +77,7 @@ printf 'az %s\\n' "$*" >> "$AIP_TEST_LOG"
 // applied with jq. Writes succeed silently.
 const FAKE_GH = `#!/usr/bin/env bash
 printf 'gh %s\\n' "$*" >> "$AIP_TEST_LOG"
+[[ " $* " == *" --silent "* ]] && exec > /dev/null
 if [[ " $* " == *" --input - "* ]]; then printf 'body %s\\n' "$(jq -c . )" >> "$AIP_TEST_LOG"; fi
 method=GET; path=''; filter=''
 args=("$@")
@@ -49,8 +85,8 @@ for ((i = 0; i < \${#args[@]}; i++)); do
   case "\${args[i]}" in
     -X) method="\${args[i + 1]}"; ((i++)) ;;
     --jq) filter="\${args[i + 1]}"; ((i++)) ;;
-    --input|-f|-F) ((i++)) ;;
-    repos/*) [[ -z "$path" ]] && path="\${args[i]}" ;;
+    --input|-f|-F|-H) ((i++)) ;;
+    repos/*|orgs/*) [[ -z "$path" ]] && path="\${args[i]}" ;;
   esac
 done
 [[ "$method" != GET ]] && exit 0
@@ -124,6 +160,10 @@ function createWorkspace() {
   chmodSync(join(bin, 'terraform'), 0o755)
   writeFileSync(join(bin, 'az'), FAKE_AZ)
   chmodSync(join(bin, 'az'), 0o755)
+  writeFileSync(join(bin, 'aws'), FAKE_AWS)
+  chmodSync(join(bin, 'aws'), 0o755)
+  writeFileSync(join(bin, 'curl'), FAKE_CURL)
+  chmodSync(join(bin, 'curl'), 0o755)
   writeFileSync(join(bin, 'gh'), FAKE_GH)
   chmodSync(join(bin, 'gh'), 0o755)
   writeFileSync(join(dir, 'fake-checks.cjs'), FAKE_CHECKS)
@@ -204,4 +244,4 @@ function createWorkspace() {
   }
 }
 
-export { createWorkspace, posix }
+export { createWorkspace, posix, SCRIPTS }

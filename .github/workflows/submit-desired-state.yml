@@ -1,11 +1,13 @@
 name: Submit desired state
 
-# Dispatched through each state repository's submit.yml by the Portal API,
-# and by the ai-platform-infra release for autoPin pins. Validates the whole
-# file at the environment's pinned release against main with the change
-# staged, then commits it as the GitHub App on op/{operation_id}, opens the
-# pull request and enables squash auto-merge. Nothing is written to Git when
-# validation fails. Every run's job summary heads with its outcome code.
+# Dispatched through each state repository's submit.yml by the GitOps worker
+# for the Portal API, by the ai-platform-infra release for autoPin pins, and by
+# an admin by hand. Validates the whole file at the environment's pinned
+# release against main with the change staged, then commits it to main as the
+# GitHub App (a signed commit with Operation-Id, Requested-By and Traceparent
+# trailers; no pull request). Every run sends its status as events (design B
+# `#workflows`, `docs/async-operations-plan.md` section 5). Every run's job
+# summary heads with its outcome code.
 # Contract: ai-platform-infra docs/gitops-contract.md.
 
 on:
@@ -16,7 +18,7 @@ on:
         required: true
     inputs:
       action:
-        description: write, remove or abandon.
+        description: write, remove or revert.
         type: string
         required: true
       environment:
@@ -24,21 +26,29 @@ on:
         required: true
       path:
         type: string
-        required: false
-        default: ''
+        required: true
       document:
-        description: The whole canonical document, for write.
+        description: The whole canonical document, for write and revert.
         type: string
         required: false
         default: ''
       operation_id:
+        description: >-
+          The Portal API's operation. Empty for a hand run, which makes its own
+          (hand-{run ID}) and is refused one that is passed in.
         type: string
-        required: true
+        required: false
+        default: ''
       expected_revision:
         description: Team files only; the revision the caller last read, 0 for a new file.
         type: string
         required: false
         default: '0'
+      expected_base:
+        description: Pins only; the pin file's blob SHA on main the caller last read, 0 for a new file.
+        type: string
+        required: false
+        default: ''
       requested_by:
         description: >-
           entra:{object ID} of the person the Portal API signed in, or app:{name}
@@ -51,36 +61,84 @@ on:
         type: string
         required: false
         default: ''
+      cdp_request_id:
+        type: string
+        required: false
+        default: ''
 
 permissions: {}
 
 jobs:
+  # First, before a token is minted or an Environment named: who dispatched
+  # this, and a valid environment name (a job on a missing Environment makes
+  # GitHub create it).
+  access:
+    name: access
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check who dispatched this
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
+        with:
+          command: admin-check
+        env:
+          AIP_ADMIN_SCOPE: submit
+          AIP_ENVIRONMENT: ${{ inputs.environment }}
+          AIP_ACTOR: ${{ github.actor }}
+          AIP_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+
   submit:
     name: submit
+    needs: access
     runs-on: ubuntu-26.04
     timeout-minutes: 15
+    # The Environment that holds AIP_PAUSED and the events identity's trust.
+    environment:
+      name: ${{ inputs.environment }}-events
     # One submit per file at a time; every queued submit waits its turn
     # (queue: max) rather than replacing the one already waiting.
     concurrency:
-      group: submit-${{ inputs.path || inputs.operation_id }}
+      group: submit-${{ inputs.path }}
       cancel-in-progress: false
       queue: max
     permissions:
       contents: read
-      pull-requests: read
+      id-token: write
     env:
       AIP_ACTION: ${{ inputs.action }}
       AIP_ENVIRONMENT: ${{ inputs.environment }}
       AIP_PATH: ${{ inputs.path }}
       AIP_DOCUMENT: ${{ inputs.document }}
-      AIP_OPERATION_ID: ${{ inputs.operation_id }}
+      AIP_OPERATION_ID_INPUT: ${{ inputs.operation_id }}
       AIP_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+      AIP_EXPECTED_BASE: ${{ inputs.expected_base }}
       AIP_REQUESTED_BY: ${{ inputs.requested_by }}
       AIP_TRACE_PARENT: ${{ inputs.trace_parent }}
+      AIP_CDP_REQUEST_ID: ${{ inputs.cdp_request_id }}
+      AIP_PAUSED: ${{ vars.AIP_PAUSED }}
       AIP_CONFIG: config
+      AIP_EVENT_SOURCE: submit
+      AIP_EVENTS_QUEUE_URL: ${{ vars.AIP_EVENTS_QUEUE_URL }}
+      AIP_EVENTS_ROLE_ARN: ${{ vars.AIP_EVENTS_ROLE_ARN }}
+      AIP_EVENTS_CLIENT_ID: ${{ vars.AIP_EVENTS_CLIENT_ID }}
+      AIP_EVENTS_AUDIENCE: ${{ vars.AIP_EVENTS_AUDIENCE }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
     steps:
+      # A re-run of failed jobs reuses a successful access job, so the actor
+      # of this attempt is checked again here, before any token or event.
+      - name: Check who ran this attempt
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
+        with:
+          command: admin-check
+        env:
+          AIP_ADMIN_SCOPE: submit
+          AIP_ENVIRONMENT: ${{ inputs.environment }}
+          AIP_ACTOR: ${{ github.actor }}
+          AIP_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+
       - id: reader
-        if: inputs.action != 'abandon'
         uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
@@ -88,58 +146,88 @@ jobs:
           repositories: ai-platform-environments,ai-platform-deployments,ai-platform-infra
           permission-contents: read
 
-      - name: Check the inputs and resolve the pinned release
-        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+      - name: Check the inputs, name the operation and resolve the pinned release
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
         with:
           command: prepare-submit
           app-token: ${{ steps.reader.outputs.token }}
         env:
           AIP_APP_SLUG: ${{ steps.reader.outputs.app-slug }}
 
+      # Adds this run to the operation (state requested). An operation that
+      # already committed sends only its committed event, below.
+      - name: Tell the Portal API the run has started
+        if: env.AIP_OUTCOME != 'existing'
+        uses: DEFRA/ai-platform-workflows/.github/actions/publish-event@v2
+        with:
+          status: requested
+          operation-ids: ${{ env.AIP_OPERATION_ID }}
+          run-report: run-report-${{ inputs.environment }}.json
+
       - id: writer
-        if: env.AIP_OUTCOME != 'existing' || env.AIP_REPAIR == 'true'
+        if: env.AIP_OUTCOME != 'existing'
         uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
           private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
-          permission-pull-requests: write
-          # Reads the validate check when the step must merge the pull
-          # request itself, because nothing on main blocks it.
-          permission-checks: read
 
-      - name: Abandon
-        if: inputs.action == 'abandon'
-        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
-        with:
-          command: abandon
-          token: ${{ steps.writer.outputs.token }}
-
-      - if: inputs.action != 'abandon' && env.AIP_OUTCOME != 'existing'
+      - if: env.AIP_OUTCOME != 'existing'
         uses: actions/checkout@v7
         with:
           ref: main
           path: state
           persist-credentials: false
 
-      - if: inputs.action != 'abandon' && env.AIP_OUTCOME != 'existing'
-        uses: DEFRA/ai-platform-workflows/.github/actions/setup@v1
+      - if: env.AIP_OUTCOME != 'existing'
+        uses: DEFRA/ai-platform-workflows/.github/actions/setup@v2
         with:
           sha: ${{ env.AIP_SHA }}
           checks: 'true'
 
       - name: Stage and validate the change
-        if: inputs.action != 'abandon' && env.AIP_OUTCOME != 'existing'
+        if: env.AIP_OUTCOME != 'existing'
         env:
           AIP_AUTHOR: ${{ steps.writer.outputs.app-slug }}[bot]
         run: bash "$AIP_SCRIPTS/desired-state.sh" stage
 
-      - name: Commit and raise the pull request, or complete an existing one
-        if: >-
-          inputs.action != 'abandon' &&
-          (env.AIP_OUTCOME != 'existing' || env.AIP_REPAIR == 'true')
-        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+      - name: Commit to main
+        if: env.AIP_OUTCOME != 'existing'
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
         with:
           command: submit
           token: ${{ steps.writer.outputs.token }}
+        env:
+          AIP_AUTHOR: ${{ steps.writer.outputs.app-slug }}[bot]
+
+      - name: Tell the Portal API the change is committed
+        if: success()
+        uses: DEFRA/ai-platform-workflows/.github/actions/publish-event@v2
+        with:
+          status: committed
+          operation-ids: ${{ env.AIP_OPERATION_ID }}
+          run-report: run-report-${{ inputs.environment }}.json
+
+      # A refusal is retryable (stale-revision, paused, commit-conflict) or
+      # not (checks-failed). A commit-conflict is sent too: it is kept in the run
+      # report, which is what the reconciler reads, and the backend resubmits it.
+      - name: Tell the Portal API the change was refused
+        if: >-
+          failure() && env.AIP_OPERATION_ID != '' &&
+          contains(fromJSON('["checks-failed","stale-revision","paused","commit-conflict"]'), env.AIP_FAILURE_CODE)
+        uses: DEFRA/ai-platform-workflows/.github/actions/publish-event@v2
+        with:
+          status: checks-failed
+          operation-ids: ${{ env.AIP_OPERATION_ID }}
+          run-report: run-report-${{ inputs.environment }}.json
+          failure-code: ${{ env.AIP_FAILURE_CODE }}
+          failure-message: ${{ env.AIP_FAILURE_MESSAGE }}
+
+      - if: always() && hashFiles(format('run-report-{0}.json', inputs.environment)) != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: run-report-${{ inputs.environment }}.json
+          path: run-report-${{ inputs.environment }}.json
+          archive: false
+          retention-days: 90

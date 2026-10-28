@@ -1,0 +1,83 @@
+name: Pause
+
+# Called by each state repository's pause.yml (workflow_dispatch, input
+# environment) after an admin sets AIP_PAUSED (`true` or `false`) on the
+# `{env}-events` Environment. It reads AIP_PAUSED, publishes `paused` or
+# `resumed` with this run's ID so the Portal API can corroborate it, and
+# writes nothing (design B `#workflows`, `docs/async-operations-plan.md`
+# section 5, Pause). Admins only, and both the actor and whoever re-ran it.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: The environment whose pause the run announces.
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  # First, before the Environment is named: who dispatched this, and a valid
+  # environment name (a job on a missing Environment makes GitHub create it).
+  access:
+    name: access
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check who dispatched this
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
+        with:
+          command: admin-check
+        env:
+          AIP_ADMIN_SCOPE: pause
+          AIP_ENVIRONMENT: ${{ inputs.environment }}
+          AIP_ACTOR: ${{ github.actor }}
+          AIP_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+
+  pause:
+    name: pause
+    needs: access
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    environment:
+      name: ${{ inputs.environment }}-events
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AIP_ENVIRONMENT: ${{ inputs.environment }}
+      AIP_EVENT_SOURCE: pause
+      AIP_EVENTS_QUEUE_URL: ${{ vars.AIP_EVENTS_QUEUE_URL }}
+      AIP_EVENTS_ROLE_ARN: ${{ vars.AIP_EVENTS_ROLE_ARN }}
+      AIP_EVENTS_CLIENT_ID: ${{ vars.AIP_EVENTS_CLIENT_ID }}
+      AIP_EVENTS_AUDIENCE: ${{ vars.AIP_EVENTS_AUDIENCE }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+    steps:
+      # A re-run of failed jobs reuses a successful access job, so the actor
+      # of this attempt is checked again here, before any token or event.
+      - name: Check who ran this attempt
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
+        with:
+          command: admin-check
+        env:
+          AIP_ADMIN_SCOPE: pause
+          AIP_ENVIRONMENT: ${{ inputs.environment }}
+          AIP_ACTOR: ${{ github.actor }}
+          AIP_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+
+      - name: Announce the pause, or the resume
+        uses: DEFRA/ai-platform-workflows/.github/actions/publish-event@v2
+        with:
+          status: ${{ vars.AIP_PAUSED == 'true' && 'paused' || 'resumed' }}
+          run-report: run-report-${{ inputs.environment }}.json
+
+      - if: always() && hashFiles(format('run-report-{0}.json', inputs.environment)) != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: run-report-${{ inputs.environment }}.json
+          path: run-report-${{ inputs.environment }}.json
+          archive: false
+          retention-days: 90

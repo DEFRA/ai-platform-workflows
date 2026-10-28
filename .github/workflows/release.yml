@@ -47,7 +47,7 @@ jobs:
       # Also on a rerun, which release-please reports as no release, so the
       # idempotent steps below can finish a run that failed after the release.
       - name: Find the release this run made
-        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
         with:
           command: resolve-release
           token: ${{ steps.releaser.outputs.token }}
@@ -58,7 +58,7 @@ jobs:
 
       - name: Move the major tag
         if: inputs.kind == 'workflows' && env.AIP_TAG != ''
-        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
         with:
           command: move-major-tag
           token: ${{ steps.releaser.outputs.token }}
@@ -82,7 +82,7 @@ jobs:
 
       - name: Submit the pin for every autoPin environment
         if: steps.pinner.outcome == 'success'
-        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v1
+        uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
         with:
           command: submit-auto-pins
           token: ${{ steps.pinner.outputs.token }}

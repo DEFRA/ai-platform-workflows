@@ -41,21 +41,38 @@ function gitopsRepo(owner, name) {
 }
 
 /**
+ * A file's text and blob SHA at a ref. The blob SHA is the base a write to a
+ * pin names (`expected_base`).
+ *
+ * @param {object} octokit - Client that can read the repository.
+ * @param {{owner: string, repo: string, path: string, ref: string}} file
+ * @returns {Promise<{text: string, sha: string} | null>} Null when there is
+ *   no file.
+ */
+async function readBlob(octokit, { owner, repo, path, ref }) {
+  const response = await unless404(
+    octokit.rest.repos.getContent({ owner, repo, path, ref })
+  )
+
+  return (
+    response && {
+      text: Buffer.from(response.data.content, response.data.encoding).toString(
+        'utf8'
+      ),
+      sha: response.data.sha
+    }
+  )
+}
+
+/**
  * A file's text at a ref.
  *
  * @param {object} octokit - Client that can read the repository.
  * @param {{owner: string, repo: string, path: string, ref: string}} file
  * @returns {Promise<string | null>} The text, or null when there is no file.
  */
-async function readFile(octokit, { owner, repo, path, ref }) {
-  const response = await unless404(
-    octokit.rest.repos.getContent({ owner, repo, path, ref })
-  )
-
-  return (
-    response &&
-    Buffer.from(response.data.content, response.data.encoding).toString('utf8')
-  )
+async function readFile(octokit, file) {
+  return (await readBlob(octokit, file))?.text ?? null
 }
 
 /**
@@ -114,6 +131,12 @@ async function lastApplied(octokit, { owner, repo, environment }) {
   })
 
   for (const deployment of deployments) {
+    // A job on `{env}-events` records Deployments of its own (the pause gate
+    // and the events identity); only the Environment's own count here.
+    if (deployment.environment && deployment.environment !== environment) {
+      continue
+    }
+
     const { data: statuses } = await octokit.rest.repos.listDeploymentStatuses({
       owner,
       repo,
@@ -326,6 +349,17 @@ async function dispatchWorkflow(octokit, { owner, repo, workflow, inputs }) {
 }
 
 /**
+ * Where the environments' parameters are copied to: AIP_CONFIG, or `config`
+ * in the workspace.
+ *
+ * @param {NodeJS.ProcessEnv} env - The step's variables.
+ * @returns {string} The folder.
+ */
+function configDir(env) {
+  return env.AIP_CONFIG || 'config'
+}
+
+/**
  * Copies the shared parameters, the registry and each environment's
  * parameters from main of ai-platform-environments into a folder laid out
  * like that repository, for the checks and Terraform.
@@ -371,6 +405,7 @@ async function writeSummary(core, heading, lines = []) {
 export {
   API_VERSION,
   changedPaths,
+  configDir,
   dispatchWorkflow,
   folderExists,
   gitopsRepo,
@@ -378,6 +413,7 @@ export {
   includesCommit,
   lastApplied,
   latestDeployment,
+  readBlob,
   readFile,
   readJson,
   tagCommit,

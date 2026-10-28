@@ -7,7 +7,12 @@
 #   apply.sh apply   applies the saved plan
 #   apply.sh purge   permanently deletes the Entra registrations the apply
 #                    removed, after az has signed in
-#   apply.sh report  the run report (R3, R12), whatever happened before it
+#   apply.sh operations  a first run report (outcome `pending`) that names the
+#                    operations this apply carries, before the plan, so the
+#                    `deploying` event can name them (AC5)
+#   apply.sh report  the run report (R3, R12), whatever happened before it;
+#                    keeps the `events[]` publish-event has already put in the
+#                    report
 #
 # Runs in the workspace that holds state/ (this repository), config/ (from
 # ai-platform-environments) and the setup action's ai-platform-infra.
@@ -127,9 +132,12 @@ plan() {
   checks plan-guard "${guard[@]}"
 }
 
+# jq holds its output back when it is not a terminal, so without --unbuffered
+# the run log shows nothing until the apply is over; a long apply needs to be
+# watched as it runs.
 apply() {
   terraform -chdir="$root" apply -input=false -lock-timeout=15m -json tfplan |
-    tee apply.jsonl | jq -r '."@message"'
+    tee apply.jsonl | jq --unbuffered -r '."@message"'
 }
 
 # Entra keeps a deleted application or service principal for 30 days, and
@@ -153,13 +161,22 @@ purge() {
   done
 }
 
-report() {
+# The run report, from whatever the earlier steps left. publish-event keeps
+# every event in the report's events[] as it sends it, and checks run-report
+# writes the report afresh, so the events already there are put back.
+build_report() {
+  local outcome="$1" events='[]'
+
+  if [[ -f "$report_file" ]]; then
+    events="$(jq -c '.events // []' "$report_file")"
+  fi
+
   if [[ -d "$root/.terraform" ]]; then
     terraform -chdir="$root" output -json > outputs.json || rm -f outputs.json
   fi
 
   local args=(--repo state --head "$GITHUB_SHA" --environment "$environment" --state "$state"
-    --outcome "${AIP_OUTCOME:?}" --release "${AIP_RELEASE:?}" --repository "$GITHUB_REPOSITORY"
+    --outcome "$outcome" --release "${AIP_RELEASE:?}" --repository "$GITHUB_REPOSITORY"
     --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
     --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
     --out "$report_file")
@@ -177,6 +194,19 @@ report() {
   fi
   checks run-report "${args[@]}"
 
+  if [[ "$events" != '[]' ]]; then
+    jq --argjson events "$events" '.events = $events' "$report_file" > "$report_file.tmp"
+    mv "$report_file.tmp" "$report_file"
+  fi
+}
+
+operations() {
+  build_report pending
+}
+
+report() {
+  build_report "${AIP_OUTCOME:?}"
+
   jq -r '"### \(.outcome)",
     "",
     "Changes: \(.changes.total.create) to add, \(.changes.total.update) to change, \(.changes.total.delete + .changes.total.replace) to destroy",
@@ -189,9 +219,9 @@ report() {
 }
 
 case "${1:-}" in
-  plan | apply | purge | report) "$1" ;;
+  plan | apply | purge | operations | report) "$1" ;;
   *)
-    echo "usage: apply.sh plan|apply|purge|report" >&2
+    echo "usage: apply.sh plan|apply|purge|operations|report" >&2
     exit 2
     ;;
 esac

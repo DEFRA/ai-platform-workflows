@@ -1,5 +1,6 @@
 import {
   changedPaths,
+  configDir,
   dispatchWorkflow,
   folderExists,
   gitopsRepo,
@@ -13,6 +14,7 @@ import {
   writeSummary
 } from './github.js'
 import { environmentName, OutcomeError, pinPath } from './gitops.js'
+import { verifyRulesets } from './rulesets.js'
 
 const STATES = new Set(['platform', 'tenants'])
 const TARGETS = new Set(['tenants', 'deployments'])
@@ -138,10 +140,12 @@ async function legFor({ github, app, context, core, state, entry, forced }) {
  * commit is no longer the head of main applies nothing (R1); the run for the
  * head does. A dispatch applies the environment it names; a push applies
  * every environment whose folder changed since its last successful apply,
- * so a superseded run's changes are never lost. Tenants apply only once
- * the platform apply covers the environment's pin (R5).
+ * so a superseded run's changes are never lost; `all` (reconcile-all)
+ * applies every environment from main, as a dispatch does for one. Tenants
+ * apply only once the platform apply covers the environment's pin (R5).
  *
- * Inputs: AIP_STATE, AIP_ENVIRONMENT (dispatch only), AIP_CONFIG.
+ * Inputs: AIP_STATE, AIP_ENVIRONMENT (dispatch only), AIP_ALL (`true` for
+ * every environment; not with AIP_ENVIRONMENT), AIP_CONFIG.
  *
  * @param {object} input - Command context from main.js.
  * @returns {Promise<{matrix: object[]}>} The apply matrix.
@@ -151,6 +155,15 @@ async function resolveApply({ github, app, context, core, env }) {
   const requested = env.AIP_ENVIRONMENT
     ? environmentName(env.AIP_ENVIRONMENT)
     : null
+  const all = env.AIP_ALL === 'true'
+
+  if (all && requested) {
+    throw new OutcomeError(
+      'failed',
+      'all applies every environment; it takes no environment'
+    )
+  }
+
   const head = await headOfMain(github, context.repo)
 
   if (head !== context.sha) {
@@ -184,7 +197,7 @@ async function resolveApply({ github, app, context, core, env }) {
       core,
       state,
       entry,
-      forced: Boolean(requested)
+      forced: Boolean(requested) || all
     })
 
     if (leg) {
@@ -196,7 +209,7 @@ async function resolveApply({ github, app, context, core, env }) {
     await writeEnvironmentsConfig(app, {
       owner,
       environments: matrix.map((leg) => leg.environment),
-      dir: env.AIP_CONFIG || 'config'
+      dir: configDir(env)
     })
   }
 
@@ -214,15 +227,18 @@ async function resolveApply({ github, app, context, core, env }) {
 /**
  * preflight: the apply job's first step. Refuses a run whose commit is no
  * longer the head of main, which is how a re-run of an old run is refused
- * (R1), and exports AIP_BASE, the commit of the environment's last
- * successful apply, for plan-guard and the run report.
+ * (R1), and one whose state repository no longer has the machine rulesets
+ * as the design has them (`rulesets-changed`, mitigation 2). Exports
+ * AIP_BASE, the commit of the environment's last successful apply, for
+ * plan-guard and the run report.
  *
  * Inputs: AIP_ENVIRONMENT.
  *
- * @param {object} input - Command context from main.js.
+ * @param {object} input - Command context from main.js; `app` is a token for
+ *   this repository with Administration: read.
  * @returns {Promise<{base: string | null}>} The last applied commit.
  */
-async function preflight({ github, context, core, env }) {
+async function preflight({ github, app, context, core, env }) {
   const environment = environmentName(env.AIP_ENVIRONMENT)
   const head = await headOfMain(github, context.repo)
 
@@ -233,6 +249,8 @@ async function preflight({ github, context, core, env }) {
         'Re-runs are refused (R1); dispatch a fresh run.'
     )
   }
+
+  await verifyRulesets(app, context.repo)
 
   const base = await lastApplied(github, { ...context.repo, environment })
   core.exportVariable('AIP_BASE', base ?? '')

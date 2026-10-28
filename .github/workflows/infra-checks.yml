@@ -22,7 +22,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: DEFRA/ai-platform-workflows/.github/actions/setup@v1
+      - uses: DEFRA/ai-platform-workflows/.github/actions/setup@v2
         with:
           path: .
           terraform: 'true'

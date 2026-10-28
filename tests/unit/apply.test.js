@@ -258,6 +258,44 @@ describe('resolveApply', () => {
       ).resolves.toEqual({ matrix: [INFRADEV_LEG] })
     })
 
+    test('applies every environment from main when asked for all, whatever changed (reconcile-all)', async () => {
+      const sandbox = registryEntry({ name: 'sandbox' })
+      headOfMain(DEPLOYMENTS)
+      environmentsRepo([registryEntry(), sandbox])
+      pinOnMain(DEPLOYMENTS, SHA)
+      nock(API)
+        .get(`${INFRA}/git/ref/tags%2Fv0.4.0`)
+        .reply(200, gitRef(INFRA_SHA))
+      nock(API)
+        .get(`${DEPLOYMENTS}/contents/environments%2Fsandbox%2Fplatform.json`)
+        .query({ ref: SHA })
+        .reply(200, fileContent(pin({ environment: 'sandbox' })))
+      nock(API)
+        .get(
+          `${ENVIRONMENTS}/contents/environments%2Fsandbox%2Fplatform.tfvars.json`
+        )
+        .query(true)
+        .reply(200, fileContent({ environment: 'sandbox' }))
+
+      const { matrix } = await resolveApply(
+        input({ AIP_ALL: 'true' }, { eventName: 'workflow_dispatch' })
+      )
+
+      expect(matrix.map((leg) => leg.environment)).toEqual([
+        'infradev',
+        'sandbox'
+      ])
+    })
+
+    test('refuses all with an environment, because they say different things', async () => {
+      await expect(
+        resolveApply(input({ AIP_ALL: 'true', AIP_ENVIRONMENT: 'infradev' }))
+      ).rejects.toMatchObject({
+        outcome: 'failed',
+        message: 'all applies every environment; it takes no environment'
+      })
+    })
+
     test('refuses an environment that is not in the registry', async () => {
       headOfMain(DEPLOYMENTS)
       nock(API)
@@ -371,8 +409,64 @@ describe('preflight', () => {
     )
   }
 
+  // The repository has both machine rulesets as the design has them.
+  function rulesetsAsDesigned(repo = TENANTS) {
+    nock(API).get(repo).reply(200, { default_branch: 'main' })
+    nock(API)
+      .get(`${repo}/rulesets`)
+      .query(true)
+      .reply(200, [
+        { id: 1, name: 'aip-machine-main', source_type: 'Repository' },
+        { id: 2, name: 'aip-machine-protect', source_type: 'Repository' }
+      ])
+    nock(API)
+      .get(`${repo}/rulesets/1`)
+      .query(true)
+      .reply(200, {
+        enforcement: 'active',
+        target: 'branch',
+        conditions: { ref_name: { include: ['~DEFAULT_BRANCH'], exclude: [] } },
+        bypass_actors: [
+          { actor_id: 111, actor_type: 'Integration', bypass_mode: 'always' }
+        ],
+        rules: [
+          {
+            type: 'pull_request',
+            parameters: {
+              required_approving_review_count: 1,
+              require_code_owner_review: true
+            }
+          },
+          {
+            type: 'required_status_checks',
+            parameters: {
+              required_status_checks: [
+                {
+                  context: 'validate-desired-state / validate',
+                  integration_id: 15368
+                }
+              ]
+            }
+          }
+        ]
+      })
+    nock(API)
+      .get(`${repo}/rulesets/2`)
+      .query(true)
+      .reply(200, {
+        enforcement: 'active',
+        target: 'branch',
+        conditions: { ref_name: { include: ['~DEFAULT_BRANCH'], exclude: [] } },
+        bypass_actors: [],
+        rules: [{ type: 'deletion' }, { type: 'non_fast_forward' }]
+      })
+    nock(API).get('/apps/ai-platform-orchestrator').reply(200, { id: 111 })
+    nock(API).get('/apps/ai-platform-orchestrator-infradev').reply(404)
+  }
+
   test('exports the commit of the last successful apply as AIP_BASE', async () => {
     headOfMain(TENANTS)
+    rulesetsAsDesigned()
     lastDeployment(TENANTS, 'b1')
 
     await expect(preflight(input())).resolves.toEqual({ base: 'b1' })
@@ -381,6 +475,7 @@ describe('preflight', () => {
 
   test('exports an empty AIP_BASE before the first apply', async () => {
     headOfMain(TENANTS)
+    rulesetsAsDesigned()
     lastDeployment(TENANTS, null)
 
     await preflight(input())
@@ -395,6 +490,31 @@ describe('preflight', () => {
       outcome: 'superseded',
       message: expect.stringContaining('Re-runs are refused (R1)')
     })
+  })
+
+  test('refuses to run when a machine ruleset is missing, before it reads what was last applied', async () => {
+    headOfMain(TENANTS)
+    nock(API)
+      .get(`${TENANTS}/rulesets`)
+      .query(true)
+      .reply(200, [
+        { id: 2, name: 'aip-machine-protect', source_type: 'Repository' }
+      ])
+
+    await expect(preflight(input())).rejects.toMatchObject({
+      outcome: 'rulesets-changed',
+      message: expect.stringContaining('aip-machine-main is missing')
+    })
+    expect(exportedVariables()).toEqual({})
+  })
+
+  test('does not read the rulesets of a superseded run', async () => {
+    headOfMain(TENANTS, 'f'.repeat(40))
+
+    await expect(preflight(input())).rejects.toMatchObject({
+      outcome: 'superseded'
+    })
+    expect(nock.pendingMocks()).toEqual([])
   })
 })
 
@@ -430,6 +550,27 @@ describe('dispatchApply', () => {
     })
     expect(started.isDone()).toBe(true)
     expect(jobSummary()).toContain('actions/runs/88')
+  })
+
+  test('records a run GitHub did not name, with no reason', async () => {
+    nock(API)
+      .post(`${DEPLOYMENTS}/actions/workflows/apply.yml/dispatches`, {
+        ref: 'main',
+        inputs: { environment: 'infradev', reason: '' }
+      })
+      .reply(204)
+
+    await expect(
+      dispatchApply(
+        commandInput(
+          {
+            env: { AIP_TARGET: 'deployments', AIP_ENVIRONMENTS: '["infradev"]' }
+          },
+          { repo: 'ai-platform-deployments' }
+        )
+      )
+    ).resolves.toEqual({ runs: [{ environment: 'infradev', url: null }] })
+    expect(jobSummary()).toContain('- `infradev`: started')
   })
 
   test('refuses a target that is not a state repository', async () => {

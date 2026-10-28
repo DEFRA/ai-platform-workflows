@@ -1,0 +1,54 @@
+name: Settings drift
+
+# Daily, and on demand: the machine repositories' settings against what
+# scripts/setup/repo-settings.sh sets (rulesets and their bypass lists,
+# Environments, the admins team: a dry run that exits 1 on any difference), and
+# the organisation audit log for any change to rulesets, branch protection,
+# Environments, Actions settings, collaborators and team access, deploy keys
+# and webhooks (plan section 15, mitigation 4). A difference or a change fails
+# the run, and GitHub tells whoever watches this repository's workflow runs.
+#
+# Needs a repository secret AIP_SETTINGS_AUDIT_TOKEN, a read-only token for
+# the audit-log account (repository Administration: read, Environments: read
+# and organisation Administration: read, or read:audit_log), and the
+# repository variables AIP_RELEASE_APP_ID, AIP_SUBMIT_APP_IDS (comma separated)
+# and AIP_ENVIRONMENTS (the real environments, comma separated).
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: settings-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    name: drift
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.AIP_SETTINGS_AUDIT_TOKEN }}
+      AIP_RELEASE_APP_ID: ${{ vars.AIP_RELEASE_APP_ID }}
+      AIP_SUBMIT_APP_IDS: ${{ vars.AIP_SUBMIT_APP_IDS }}
+      AIP_ENVIRONMENTS: ${{ vars.AIP_ENVIRONMENTS }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Compare the settings with what repo-settings.sh sets
+        run: >-
+          bash scripts/setup/repo-settings.sh --verify
+          --app-id "$AIP_RELEASE_APP_ID" --submit-app-ids "$AIP_SUBMIT_APP_IDS"
+          --environments "$AIP_ENVIRONMENTS"
+          --repos ai-platform-tenants,ai-platform-deployments
+
+      - name: List the changes the audit log recorded
+        if: always()
+        run: bash scripts/setup/audit-log.sh

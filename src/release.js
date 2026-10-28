@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url'
 import {
   dispatchWorkflow,
   gitopsRepo,
+  readBlob,
   readJson,
   writeSummary
 } from './github.js'
@@ -273,12 +274,13 @@ async function submitAutoPins({ github, context, core, env }) {
 
   for (const entry of registry.environments.filter((e) => e.autoPin)) {
     const path = pinPath(entry.name)
-    const previous = await readJson(github, {
+    const current = await readBlob(github, {
       ...deployments,
       path,
       ref: 'main'
     })
-    // One operation, and so one op/ branch, per environment.
+    const previous = current ? JSON.parse(current.text) : null
+    // One operation per environment.
     const operationId = `rel-${entry.name}-${tag.replaceAll('.', '-')}-${context.runId}`
     const pin = {
       schemaVersion: 1,
@@ -299,7 +301,10 @@ async function submitAutoPins({ github, context, core, env }) {
         path,
         document: canonicalJson(pin),
         operation_id: operationId,
-        requested_by: requestedBy
+        requested_by: requestedBy,
+        // The pin file as main has it now, which submit commits on or refuses
+        // as stale-revision (AC20); 0 for an environment's first pin.
+        expected_base: current?.sha ?? '0'
       }
     })
 

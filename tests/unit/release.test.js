@@ -38,6 +38,7 @@ const BRANCH = 'release-please--branches--main'
 const HEAD = 'b'.repeat(40)
 const REQUIRED = ['infra-checks / validate', 'infra-checks / lint']
 const BOT = 'ai-platform-orchestrator[bot]'
+const PIN_BLOB = 'ab'.repeat(20)
 
 describe('mergeRelease', () => {
   function input(run = {}) {
@@ -271,6 +272,21 @@ describe('moveMajorTag', () => {
       moveMajorTag(input({ AIP_TAG: 'latest' }))
     ).rejects.toMatchObject({ outcome: 'failed' })
   })
+
+  test('refuses a run with no release at all', async () => {
+    await expect(
+      moveMajorTag(commandInput({ env: {} }, { repo: 'ai-platform-workflows' }))
+    ).rejects.toMatchObject({
+      outcome: 'failed',
+      message: 'a release needs a tag vX.Y.Z and a SHA'
+    })
+  })
+
+  test('surfaces any other failure to move the tag', async () => {
+    nock(API).patch(`${WORKFLOWS}/git/refs/tags%2Fv1`).reply(500, {})
+
+    await expect(moveMajorTag(input())).rejects.toMatchObject({ status: 500 })
+  })
 })
 
 describe('submitAutoPins', () => {
@@ -310,7 +326,7 @@ describe('submitAutoPins', () => {
     nock(API)
       .get(`${DEPLOYMENTS}/contents/environments%2Finfradev%2Fplatform.json`)
       .query({ ref: 'main' })
-      .reply(200, fileContent(pin()))
+      .reply(200, fileContent(pin(), PIN_BLOB))
     nock(API)
       .get(`${DEPLOYMENTS}/contents/environments%2Fsandbox%2Fplatform.json`)
       .query({ ref: 'main' })
@@ -336,6 +352,11 @@ describe('submitAutoPins', () => {
       requested_by: 'app:ai-platform-orchestrator'
     })
     expect(sandbox.operation_id).toBe('rel-sandbox-v0-5-0-98765')
+    // Every write names its base (AC20): the blob the pin has on main now,
+    // or 0 for a pin that does not exist yet.
+    expect(infradev.expected_base).toBe(PIN_BLOB)
+    expect(sandbox.expected_base).toBe('0')
+    expect(infradev).not.toHaveProperty('abandon')
 
     const document = JSON.parse(infradev.document)
     expect(document).toMatchObject({
@@ -348,5 +369,33 @@ describe('submitAutoPins', () => {
     expect(Object.keys(document)).toEqual([...Object.keys(document)].sort())
     expect(infradev.document.endsWith('}\n')).toBe(true)
     expect(JSON.parse(sandbox.document).previousRelease).toBeNull()
+  })
+
+  test('says so when no environment has autoPin', async () => {
+    nock(API)
+      .get(`${ENVIRONMENTS}/contents/registry.json`)
+      .query({ ref: 'main' })
+      .reply(200, fileContent(registry([registryEntry({ autoPin: false })])))
+
+    await expect(submitAutoPins(input())).resolves.toEqual({ submitted: [] })
+    expect(jobSummary()).toContain('No environment has autoPin.')
+  })
+
+  test('records a dispatch GitHub did not name a run for as started', async () => {
+    nock(API)
+      .get(`${ENVIRONMENTS}/contents/registry.json`)
+      .query({ ref: 'main' })
+      .reply(200, fileContent(registry()))
+    nock(API)
+      .get(`${DEPLOYMENTS}/contents/environments%2Finfradev%2Fplatform.json`)
+      .query({ ref: 'main' })
+      .reply(404)
+    nock(API)
+      .post(`${DEPLOYMENTS}/actions/workflows/submit.yml/dispatches`)
+      .reply(204)
+
+    await submitAutoPins(input())
+
+    expect(jobSummary()).toContain('(`rel-infradev-v0-5-0-98765`): started')
   })
 })

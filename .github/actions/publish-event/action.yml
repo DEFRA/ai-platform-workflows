@@ -1,0 +1,56 @@
+name: Publish event
+description: >
+  Sends one status event per operation of a run to the events queue
+  (aip.gitops.event/1), for the Portal API. It first keeps each event in the
+  run report's events[] (a report that holds only events[] when the run has
+  none), then signs in as the events identity (AIP_EVENTS_CLIENT_ID, from the
+  job's OIDC token, inside the same deadline as the send), gets a
+  token for AIP_EVENTS_AUDIENCE, assumes AIP_EVENTS_ROLE_ARN and sends to
+  AIP_EVENTS_QUEUE_URL. Bounded to 10 seconds in all (AIP_PUBLISH_SECONDS):
+  the lookups of the apply's commits and pull requests, the sign-in and the
+  send share that deadline, with 2 retries and
+  continue-on-error, so a deploy never waits on it or fails on it. The job
+  sets AIP_EVENT_SOURCE (submit, apply or pause), AIP_ENVIRONMENT, the
+  AIP_EVENTS_* variables and AZURE_TENANT_ID; a submit also sets what its
+  prepare step exported.
+
+inputs:
+  status:
+    description: requested, checks-failed, committed, deploying, deployed, deploy-failed, paused or resumed.
+    required: true
+  operation-ids:
+    description: Operation IDs, a JSON list or separated by commas; empty reads them from the run report, or names none.
+    required: false
+    default: ''
+  run-report:
+    description: Path of the run report to keep the events in; empty keeps them nowhere.
+    required: false
+    default: ''
+  failure-code:
+    description: For checks-failed and deploy-failed, the code (stale-revision, paused, commit-conflict, or the outcome).
+    required: false
+    default: ''
+  failure-message:
+    description: For checks-failed and deploy-failed, what a person needs to know.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - id: build
+      continue-on-error: true
+      uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
+      with:
+        command: build-event
+      env:
+        AIP_EVENT_STATUS: ${{ inputs.status }}
+        AIP_EVENT_OPERATION_IDS: ${{ inputs.operation-ids }}
+        AIP_EVENT_REPORT: ${{ inputs.run-report }}
+        AIP_EVENT_FAILURE_CODE: ${{ inputs.failure-code }}
+        AIP_EVENT_FAILURE_MESSAGE: ${{ inputs.failure-message }}
+
+    - if: env.AIP_EVENT_FILE != ''
+      continue-on-error: true
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/../../../scripts/publish-event.sh"

@@ -4,21 +4,13 @@ import { join } from 'node:path'
 import nock from 'nock'
 
 import {
-  abandon,
   commitMessage,
   prepareSubmit,
-  prune,
+  runScript,
   submit,
-  VALIDATE_CHECK
+  TIMERS
 } from '../../src/submit.js'
-import {
-  fileContent,
-  gitCommit,
-  gitRef,
-  matchingRef,
-  pullRequest,
-  pullRequestFile
-} from '../fixtures/github-api.js'
+import { fileContent, gitRef } from '../fixtures/github-api.js'
 import { INFRA_SHA, pin } from '../fixtures/gitops-documents.js'
 import {
   API,
@@ -35,8 +27,12 @@ const ENVIRONMENTS = `/repos/${OWNER}/ai-platform-environments`
 const INFRA = `/repos/${OWNER}/ai-platform-infra`
 const OPERATION = '000000000000000000000001'
 const PATH = 'environments/infradev/alpha.json'
+const PIN_PATH = 'environments/infradev/platform.json'
 const PERSON = 'entra:0f8fad5b-d9cb-469f-a165-70867728950e'
 const DOCUMENT = `{\n  "revision": 2,\n  "updatedBy": "${PERSON}"\n}\n`
+const BLOB = 'f'.repeat(40)
+const NEW_HEAD = 'a1'.repeat(20)
+const NEW_COMMIT = 'c0'.repeat(20)
 // The workflow's own App dispatched the run, for the Portal API.
 const BY_APP = {
   payload: {
@@ -53,13 +49,18 @@ function submission(env = {}) {
     AIP_ENVIRONMENT: 'infradev',
     AIP_PATH: PATH,
     AIP_DOCUMENT: DOCUMENT,
+    AIP_OPERATION_ID_INPUT: OPERATION,
     AIP_OPERATION_ID: OPERATION,
     AIP_EXPECTED_REVISION: '1',
+    AIP_EXPECTED_BASE: '',
+    AIP_CDP_REQUEST_ID: 'req-1',
     AIP_REQUESTED_BY: PERSON,
     AIP_REQUESTER: PERSON,
     AIP_APP_SLUG: 'ai-platform-orchestrator',
     AIP_TRACE_PARENT: '',
+    AIP_PAUSED: 'false',
     AIP_MAIN_SHA: SHA,
+    AIP_SCRIPTS: '/runner/scripts',
     AIP_CONFIG: join(process.env.RUNNER_TEMP, 'config'),
     RUNNER_TEMP: process.env.RUNNER_TEMP,
     ...env
@@ -83,33 +84,29 @@ function tagResolves() {
   nock(API).get(`${INFRA}/git/ref/tags%2Fv0.4.0`).reply(200, gitRef(INFRA_SHA))
 }
 
-function noOperationPullRequest(repo = TENANTS) {
+function pinOnMain() {
   nock(API)
-    .get(`${repo}/pulls`)
-    .query({ head: `${OWNER}:op/${OPERATION}`, state: 'all', per_page: '10' })
-    .reply(200, [])
+    .get(`${DEPLOYMENTS}/contents/environments%2Finfradev%2Fplatform.json`)
+    .query({ ref: 'main' })
+    .reply(200, fileContent(pin()))
 }
 
-// GitHub echoes the title and body it was sent; a new pull request has no
-// labels and no auto-merge.
-function pullRequestCreated(number, matches = () => true) {
-  let sent
-
+// The commits that touched the file on main, newest first.
+function history(commits = [], repo = TENANTS, path = PATH) {
   return nock(API)
-    .post(`${TENANTS}/pulls`, (body) => {
-      sent = body
-      return matches(body)
-    })
-    .reply(201, () =>
-      pullRequest({ number, title: sent.title, body: sent.body, labels: [] })
-    )
+    .get(`${repo}/commits`)
+    .query({ sha: 'main', path, per_page: '30' })
+    .reply(200, commits)
 }
 
-function openPullRequests(pulls) {
-  nock(API)
-    .get(`${TENANTS}/pulls`)
-    .query({ state: 'open', per_page: '100' })
-    .reply(200, pulls)
+function commitOn(operation, sha = NEW_COMMIT) {
+  return {
+    sha,
+    commit: {
+      message: `chore(infradev): write alpha\n\nOperation-Id: ${operation}\nRequested-By: ${PERSON}`,
+      committer: { date: '2026-10-26T12:00:00Z' }
+    }
+  }
 }
 
 describe('commitMessage', () => {
@@ -142,14 +139,29 @@ describe('commitMessage', () => {
       }).body
     ).toBe(`Operation-Id: ${OPERATION}\nRequested-By: app:ai-platform-backend`)
   })
+
+  test('names a revert as one', () => {
+    expect(
+      commitMessage({
+        action: 'revert',
+        environment: 'infradev',
+        path: PATH,
+        operationId: OPERATION,
+        requestedBy: PERSON
+      }).headline
+    ).toBe('chore(infradev): revert alpha')
+  })
 })
 
 describe('prepareSubmit', () => {
   test.each([
-    [{ AIP_ACTION: 'merge' }, 'action must be write, remove or abandon'],
+    [{ AIP_ACTION: 'merge' }, 'action must be write, remove or revert'],
+    [{ AIP_ACTION: 'abandon' }, 'action must be write, remove or revert'],
     [{ AIP_ENVIRONMENT: 'Infradev' }, 'invalid environment'],
-    [{ AIP_OPERATION_ID: 'short' }, 'invalid operation_id'],
+    [{ AIP_OPERATION_ID_INPUT: 'short' }, 'invalid operation_id'],
+    [{ AIP_OPERATION_ID_INPUT: '' }, 'invalid operation_id'],
     [{ AIP_TRACE_PARENT: 'trace' }, 'invalid trace_parent'],
+    [{ AIP_CDP_REQUEST_ID: 'not valid!' }, 'invalid cdp_request_id'],
     [
       { AIP_REQUESTED_BY: 'someone@defra.gov.uk' },
       'requested_by must be entra:{object ID}, github:{user ID} or app:{name}'
@@ -166,47 +178,129 @@ describe('prepareSubmit', () => {
       { AIP_EXPECTED_REVISION: '-1' },
       'expected_revision must be a whole number'
     ],
+    [
+      { AIP_EXPECTED_BASE: BLOB },
+      'expected_base is for the platform pin only; a team file names expected_revision'
+    ],
     [{ AIP_DOCUMENT: '' }, 'document must be under 60 KB'],
-    [{ AIP_DOCUMENT: 'x'.repeat(61440) }, 'document must be under 60 KB']
+    [{ AIP_DOCUMENT: 'x'.repeat(61440) }, 'document must be under 60 KB'],
+    [
+      { AIP_ACTION: 'revert', AIP_DOCUMENT: '' },
+      'document must be under 60 KB'
+    ],
+    [{ AIP_ENVIRONMENT: undefined }, 'invalid environment'],
+    [{ AIP_PATH: undefined }, 'path must be environments/infradev/{name}.json'],
+    [
+      { AIP_EXPECTED_REVISION: undefined },
+      'expected_revision must be a whole number'
+    ],
+    [{ AIP_DOCUMENT: undefined }, 'document must be under 60 KB'],
+    [{ AIP_OPERATION_ID_INPUT: undefined }, 'invalid operation_id']
   ])('refuses %o before writing anything', async (env, message) => {
     await expect(
-      prepareSubmit(commandInput({ env: submission(env) }))
+      prepareSubmit(commandInput({ env: submission(env) }, BY_APP))
     ).rejects.toMatchObject({ outcome: 'checks-failed', message })
   })
 
   test('refuses to run outside a state repository', async () => {
     await expect(
       prepareSubmit(
-        commandInput({ env: submission() }, { repo: 'ai-platform-infra' })
+        commandInput(
+          { env: submission() },
+          { repo: 'ai-platform-infra', ...BY_APP }
+        )
       )
     ).rejects.toMatchObject({ outcome: 'checks-failed' })
   })
 
+  test.each([
+    [{ AIP_EXPECTED_BASE: '' }],
+    [{ AIP_EXPECTED_BASE: 'main' }],
+    [{ AIP_EXPECTED_BASE: undefined }],
+    [{ AIP_EXPECTED_BASE: BLOB.toUpperCase() }]
+  ])('refuses a pin that does not name its base (%o)', async (env) => {
+    await expect(
+      prepareSubmit(
+        commandInput(
+          {
+            env: submission({
+              AIP_PATH: PIN_PATH,
+              AIP_REQUESTED_BY: 'app:ai-platform-orchestrator',
+              ...env
+            })
+          },
+          { repo: 'ai-platform-deployments', ...BY_APP }
+        )
+      )
+    ).rejects.toMatchObject({
+      outcome: 'checks-failed',
+      message:
+        "expected_base must be the pin file's blob SHA on main, or 0 for a new file"
+    })
+  })
+
   test('resolves a team file at the environment pin and stages its inputs', async () => {
-    noOperationPullRequest()
-    nock(API)
-      .get(`${DEPLOYMENTS}/contents/environments%2Finfradev%2Fplatform.json`)
-      .query({ ref: 'main' })
-      .reply(200, fileContent(pin()))
+    history()
+    pinOnMain()
     tagResolves()
     environmentsRepo()
 
     await expect(
       prepareSubmit(commandInput({ env: submission() }, BY_APP))
-    ).resolves.toEqual({ kind: 'tenants', release: 'v0.4.0', sha: INFRA_SHA })
+    ).resolves.toEqual({
+      kind: 'tenants',
+      operationId: OPERATION,
+      release: 'v0.4.0',
+      sha: INFRA_SHA
+    })
 
     const exported = exportedVariables()
     expect(exported).toMatchObject({
       AIP_KIND: 'tenants',
+      AIP_OPERATION_ID: OPERATION,
       AIP_REQUESTER: PERSON,
       AIP_RELEASE: 'v0.4.0',
       AIP_SHA: INFRA_SHA
     })
+    expect(exported).not.toHaveProperty('AIP_OUTCOME')
     expect(readFileSync(exported.AIP_DOCUMENT_FILE, 'utf8')).toBe(DOCUMENT)
   })
 
-  test("validates an environment's first pin at its own release", async () => {
-    noOperationPullRequest(DEPLOYMENTS)
+  test('stages a removal with no document and no file to write', async () => {
+    history()
+    pinOnMain()
+    tagResolves()
+    environmentsRepo()
+
+    await expect(
+      prepareSubmit(
+        commandInput(
+          { env: submission({ AIP_ACTION: 'remove', AIP_DOCUMENT: '' }) },
+          BY_APP
+        )
+      )
+    ).resolves.toMatchObject({ kind: 'tenants', release: 'v0.4.0' })
+    expect(exportedVariables()).not.toHaveProperty('AIP_DOCUMENT_FILE')
+  })
+
+  test('stages a revert as a write of the document it is given', async () => {
+    history()
+    pinOnMain()
+    tagResolves()
+    environmentsRepo()
+
+    await expect(
+      prepareSubmit(
+        commandInput({ env: submission({ AIP_ACTION: 'revert' }) }, BY_APP)
+      )
+    ).resolves.toMatchObject({ kind: 'tenants' })
+    expect(readFileSync(exportedVariables().AIP_DOCUMENT_FILE, 'utf8')).toBe(
+      DOCUMENT
+    )
+  })
+
+  test("validates an environment's first pin at its own release, naming no base on a new file", async () => {
+    history([], DEPLOYMENTS, PIN_PATH)
     nock(API)
       .get(`${DEPLOYMENTS}/contents/environments%2Finfradev%2Fplatform.json`)
       .query({ ref: 'main' })
@@ -219,27 +313,29 @@ describe('prepareSubmit', () => {
         commandInput(
           {
             env: submission({
-              AIP_PATH: 'environments/infradev/platform.json',
+              AIP_PATH: PIN_PATH,
               AIP_DOCUMENT: JSON.stringify(pin()),
-              AIP_REQUESTED_BY: 'app:ai-platform-orchestrator'
+              AIP_REQUESTED_BY: 'app:ai-platform-orchestrator',
+              AIP_EXPECTED_BASE: '0'
             })
           },
           { repo: 'ai-platform-deployments', ...BY_APP }
         )
       )
-    ).resolves.toEqual({ kind: 'pins', release: 'v0.4.0', sha: INFRA_SHA })
+    ).resolves.toMatchObject({ kind: 'pins', release: 'v0.4.0' })
   })
 
   test('refuses a pin document that is not JSON', async () => {
-    noOperationPullRequest(DEPLOYMENTS)
+    history([], DEPLOYMENTS, PIN_PATH)
 
     await expect(
       prepareSubmit(
         commandInput(
           {
             env: submission({
-              AIP_PATH: 'environments/infradev/platform.json',
-              AIP_DOCUMENT: '{ not json'
+              AIP_PATH: PIN_PATH,
+              AIP_DOCUMENT: '{ not json',
+              AIP_EXPECTED_BASE: '0'
             })
           },
           { repo: 'ai-platform-deployments', ...BY_APP }
@@ -248,240 +344,264 @@ describe('prepareSubmit', () => {
     ).rejects.toMatchObject({ message: 'document is not JSON' })
   })
 
-  test('records an engineer who dispatches by their GitHub user ID, whatever requested_by says', async () => {
-    noOperationPullRequest()
-    nock(API)
-      .get(`${DEPLOYMENTS}/contents/environments%2Finfradev%2Fplatform.json`)
-      .query({ ref: 'main' })
-      .reply(200, fileContent(pin()))
-    tagResolves()
-    environmentsRepo()
-    const document = DOCUMENT.replace(PERSON, 'github:583231')
+  describe('an engineer who dispatches by hand', () => {
+    const hand = (env = {}) =>
+      submission({
+        AIP_OPERATION_ID_INPUT: '',
+        AIP_OPERATION_ID: '',
+        AIP_DOCUMENT: DOCUMENT.replace(PERSON, 'github:583231'),
+        ...env
+      })
 
-    await prepareSubmit(
-      commandInput({ env: submission({ AIP_DOCUMENT: document }) }, BY_ENGINEER)
-    )
+    function staged() {
+      history([], TENANTS, PATH)
+      pinOnMain()
+      tagResolves()
+      environmentsRepo()
+    }
 
-    expect(exportedVariables().AIP_REQUESTER).toBe('github:583231')
+    test('is recorded by their GitHub user ID, whatever requested_by says, and gets an operation ID of their run', async () => {
+      staged()
+
+      await expect(
+        prepareSubmit(commandInput({ env: hand() }, BY_ENGINEER))
+      ).resolves.toMatchObject({ operationId: 'hand-4242' })
+
+      expect(exportedVariables()).toMatchObject({
+        AIP_REQUESTER: 'github:583231',
+        AIP_OPERATION_ID: 'hand-4242'
+      })
+    })
+
+    test('may not name the operation ID', async () => {
+      await expect(
+        prepareSubmit(
+          commandInput(
+            { env: hand({ AIP_OPERATION_ID_INPUT: OPERATION }) },
+            BY_ENGINEER
+          )
+        )
+      ).rejects.toMatchObject({
+        outcome: 'checks-failed',
+        message:
+          'a hand run makes its own operation ID; leave operation_id empty'
+      })
+    })
+
+    test('goes through while the environment is paused, as an admin may', async () => {
+      staged()
+
+      await expect(
+        prepareSubmit(
+          commandInput({ env: hand({ AIP_PAUSED: 'true' }) }, BY_ENGINEER)
+        )
+      ).resolves.toMatchObject({ operationId: 'hand-4242' })
+    })
+
+    test('is refused when the document does not name them as its author', async () => {
+      history([], TENANTS, PATH)
+      await expect(
+        prepareSubmit(
+          commandInput({ env: hand({ AIP_DOCUMENT: DOCUMENT }) }, BY_ENGINEER)
+        )
+      ).rejects.toMatchObject({
+        message: 'updatedBy must be github:583231, who requested the change'
+      })
+    })
   })
 
   test.each([
     [
-      BY_ENGINEER,
-      {},
-      'updatedBy must be github:583231, who requested the change'
+      'an App with no requested_by',
+      { AIP_REQUESTED_BY: '' },
+      BY_APP,
+      'requested_by is required'
     ],
-    [BY_APP, { AIP_REQUESTED_BY: '' }, 'requested_by is required'],
-    [{}, {}, 'the run has no sender']
-  ])('refuses a change it cannot attribute (%#)', async (run, env, message) => {
-    noOperationPullRequest()
+    ['a run with no sender', {}, {}, 'the run has no sender']
+  ])(
+    'refuses a change it cannot attribute: %s',
+    async (_why, env, run, message) => {
+      await expect(
+        prepareSubmit(commandInput({ env: submission(env) }, run))
+      ).rejects.toMatchObject({ outcome: 'checks-failed', message })
+    }
+  )
 
-    await expect(
-      prepareSubmit(commandInput({ env: submission(env) }, run))
-    ).rejects.toMatchObject({ outcome: 'checks-failed', message })
+  describe('while the environment is paused', () => {
+    test('holds a portal request: it commits nothing, and the operation is named so the refusal can be sent', async () => {
+      await expect(
+        prepareSubmit(
+          commandInput({ env: submission({ AIP_PAUSED: 'true' }) }, BY_APP)
+        )
+      ).rejects.toMatchObject({
+        outcome: 'paused',
+        message: 'infradev is paused; an admin must resume it'
+      })
+      expect(exportedVariables()).toMatchObject({
+        AIP_OPERATION_ID: OPERATION,
+        AIP_REQUESTER: PERSON
+      })
+    })
+
+    test('holds a write by the infradev App too', async () => {
+      await expect(
+        prepareSubmit(
+          commandInput(
+            {
+              env: submission({
+                AIP_PAUSED: 'true',
+                AIP_APP_SLUG: 'ai-platform-orchestrator-infradev'
+              })
+            },
+            {
+              payload: {
+                sender: {
+                  type: 'Bot',
+                  login: 'ai-platform-orchestrator-infradev[bot]',
+                  id: 10
+                }
+              }
+            }
+          )
+        )
+      ).rejects.toMatchObject({ outcome: 'paused' })
+    })
   })
 
-  test('reports the pull request a retried operation already has', async () => {
-    nock(API)
-      .get(`${TENANTS}/pulls`)
-      .query(true)
-      .reply(200, [pullRequest({ state: 'closed', merged_at: '2026-10-14' })])
+  describe('an operation that already committed', () => {
+    test('reports its commit and asks the next steps to do nothing, so a repeat dispatch is harmless', async () => {
+      history([
+        commitOn('some-other-operation-1', 'e'.repeat(40)),
+        commitOn(OPERATION)
+      ])
 
-    await expect(
-      prepareSubmit(commandInput({ env: submission() }))
-    ).resolves.toEqual({
-      kind: 'tenants',
-      outcome: 'existing',
-      number: 7,
-      url: 'https://github.com/DEFRA/ai-platform-tenants/pull/7'
+      await expect(
+        prepareSubmit(commandInput({ env: submission() }, BY_APP))
+      ).resolves.toEqual({
+        kind: 'tenants',
+        operationId: OPERATION,
+        outcome: 'existing',
+        commit: NEW_COMMIT
+      })
+
+      expect(exportedVariables()).toMatchObject({
+        AIP_OUTCOME: 'existing',
+        AIP_COMMIT_SHA: NEW_COMMIT,
+        AIP_COMMITTED_AT: '2026-10-26T12:00:00Z'
+      })
+      expect(jobSummary()).toContain('### existing')
     })
-    expect(exportedVariables()).toEqual({
-      AIP_KIND: 'tenants',
-      AIP_OUTCOME: 'existing'
+
+    test('does not take a commit that only mentions the ID in its subject', async () => {
+      history([
+        {
+          sha: NEW_COMMIT,
+          commit: {
+            message: `chore: revert ${OPERATION}`,
+            committer: { date: '2026-10-26T12:00:00Z' }
+          }
+        }
+      ])
+      pinOnMain()
+      tagResolves()
+      environmentsRepo()
+
+      await expect(
+        prepareSubmit(commandInput({ env: submission() }, BY_APP))
+      ).resolves.not.toHaveProperty('outcome')
     })
-    expect(jobSummary()).toContain('### existing')
-  })
-
-  test('asks the next steps to complete a retried operation whose pull request is open', async () => {
-    nock(API).get(`${TENANTS}/pulls`).query(true).reply(200, [pullRequest()])
-
-    await prepareSubmit(commandInput({ env: submission() }))
-
-    expect(exportedVariables()).toMatchObject({
-      AIP_OUTCOME: 'existing',
-      AIP_REPAIR: 'true'
-    })
-    expect(jobSummary()).toContain('### existing')
-  })
-
-  test('needs no pin to abandon', async () => {
-    await expect(
-      prepareSubmit(
-        commandInput({
-          env: submission({ AIP_ACTION: 'abandon', AIP_PATH: '' })
-        })
-      )
-    ).resolves.toEqual({ kind: 'tenants' })
   })
 })
 
 describe('submit', () => {
-  test('reports the pull request an operation already has', async () => {
-    nock(API)
-      .get(`${TENANTS}/pulls`)
-      .query(true)
-      .reply(200, [pullRequest({ auto_merge: { merge_method: 'squash' } })])
+  // The restage a moved head asks for: desired-state.sh restage.
+  function restager(...results) {
+    const run = vi.fn()
+
+    for (const result of results) {
+      run.mockReturnValueOnce(result)
+    }
+
+    return run
+  }
+
+  function clock() {
+    return { sleep: vi.fn(async () => {}), jitter: vi.fn(() => 1500) }
+  }
+
+  function commitMutation(matches = () => true, reply) {
+    return nock(API)
+      .post('/graphql', ({ query, variables }) =>
+        query.includes('createCommitOnBranch')
+          ? matches(variables.input)
+          : false
+      )
+      .reply(
+        200,
+        reply ?? {
+          data: { createCommitOnBranch: { commit: { oid: NEW_COMMIT } } }
+        }
+      )
+  }
+
+  const MOVED = {
+    data: { createCommitOnBranch: null },
+    errors: [
+      {
+        type: 'STALE_DATA',
+        message:
+          'Expected branch to point to "aaa" but it did not. Pull and try again.'
+      }
+    ]
+  }
+
+  test('commits the file to main as the App, with the trailers, and opens no pull request', async () => {
+    const commit = commitMutation((input) => {
+      return (
+        input.expectedHeadOid === SHA &&
+        input.branch.branchName === 'main' &&
+        input.branch.repositoryNameWithOwner ===
+          `${OWNER}/ai-platform-tenants` &&
+        input.message.headline === 'chore(infradev): write alpha' &&
+        input.message.body ===
+          `Operation-Id: ${OPERATION}\nRequested-By: ${PERSON}` &&
+        input.fileChanges.additions[0].path === PATH &&
+        input.fileChanges.additions[0].contents ===
+          Buffer.from(DOCUMENT).toString('base64')
+      )
+    })
 
     await expect(submit(commandInput({ env: submission() }))).resolves.toEqual({
-      outcome: 'existing',
-      number: 7,
-      url: 'https://github.com/DEFRA/ai-platform-tenants/pull/7'
+      outcome: 'committed',
+      commit: NEW_COMMIT
     })
-    expect(jobSummary()).toContain('### existing')
-  })
 
-  test('completes the labels and auto-merge an earlier attempt left undone', async () => {
-    nock(API)
-      .get(`${TENANTS}/pulls`)
-      .query(true)
-      .reply(200, [
-        pullRequest({
-          title: 'chore(infradev): write alpha',
-          body: `Submitted by the AI Platform.\n\nOperation-Id: ${OPERATION}\n`,
-          labels: [{ name: 'gitops' }]
-        })
-      ])
-    const labels = nock(API)
-      .post(`${TENANTS}/issues/7/labels`, { labels: ['env:infradev'] })
-      .reply(200, [])
-    const autoMerge = nock(API)
-      .post(
-        '/graphql',
-        ({ variables }) =>
-          variables.headline === 'chore(infradev): write alpha (#7)' &&
-          variables.body === `Operation-Id: ${OPERATION}`
-      )
-      .reply(200, { data: { enablePullRequestAutoMerge: {} } })
-
-    await expect(
-      submit(commandInput({ env: submission() }))
-    ).resolves.toMatchObject({ outcome: 'existing', number: 7 })
-    expect(labels.isDone()).toBe(true)
-    expect(autoMerge.isDone()).toBe(true)
-  })
-
-  test('refuses a file another operation has open', async () => {
-    noOperationPullRequest()
-    openPullRequests([
-      pullRequest({ number: 9, head: { ref: 'op/other-operation-1' } })
-    ])
-    nock(API)
-      .get(`${TENANTS}/pulls/9/files`)
-      .query(true)
-      .reply(200, [pullRequestFile(PATH)])
-
-    await expect(
-      submit(commandInput({ env: submission() }))
-    ).rejects.toMatchObject({
-      outcome: 'file-locked',
-      message: `${PATH} belongs to the open pull request https://github.com/DEFRA/ai-platform-tenants/pull/7`
-    })
-  })
-
-  test('commits as the App, opens the pull request and enables auto-merge', async () => {
-    noOperationPullRequest()
-    openPullRequests([
-      pullRequest({ number: 9, head: { ref: 'op/other-operation-1' } }),
-      pullRequest({ number: 10, head: { ref: 'renovate/deps' } })
-    ])
-    nock(API)
-      .get(`${TENANTS}/pulls/9/files`)
-      .query(true)
-      .reply(200, [pullRequestFile('environments/infradev/beta.json')])
-    nock(API)
-      .post(`${TENANTS}/git/refs`, {
-        ref: `refs/heads/op/${OPERATION}`,
-        sha: SHA
-      })
-      .reply(201, {})
-    const commit = nock(API)
-      .post('/graphql', ({ variables }) => {
-        const { input } = variables
-        return (
-          input.expectedHeadOid === SHA &&
-          input.branch.branchName === `op/${OPERATION}` &&
-          input.branch.repositoryNameWithOwner ===
-            `${OWNER}/ai-platform-tenants` &&
-          input.fileChanges.additions[0].path === PATH &&
-          input.fileChanges.additions[0].contents ===
-            Buffer.from(DOCUMENT).toString('base64')
-        )
-      })
-      .reply(200, { data: { createCommitOnBranch: { commit: { oid: 'b' } } } })
-    pullRequestCreated(
-      11,
-      (body) =>
-        body.head === `op/${OPERATION}` &&
-        body.title === 'chore(infradev): write alpha'
-    )
-    const labels = nock(API)
-      .post(`${TENANTS}/issues/11/labels`, {
-        labels: ['gitops', 'env:infradev']
-      })
-      .reply(200, [])
-    const autoMerge = nock(API)
-      .post(
-        '/graphql',
-        ({ query, variables }) =>
-          query.includes('enablePullRequestAutoMerge') &&
-          variables.headline === 'chore(infradev): write alpha (#11)' &&
-          variables.body.startsWith(`Operation-Id: ${OPERATION}`)
-      )
-      .reply(200, { data: { enablePullRequestAutoMerge: {} } })
-
-    await expect(
-      submit(commandInput({ env: submission() }))
-    ).resolves.toMatchObject({ outcome: 'pr-raised', number: 11 })
     expect(commit.isDone()).toBe(true)
-    expect(labels.isDone()).toBe(true)
-    expect(autoMerge.isDone()).toBe(true)
-    expect(jobSummary()).toContain('### pr-raised')
+    expect(exportedVariables().AIP_COMMIT_SHA).toBe(NEW_COMMIT)
+    expect(exportedVariables().AIP_COMMITTED_AT).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+    )
+    expect(jobSummary()).toContain('### committed')
+    expect(nock.pendingMocks()).toEqual([])
   })
 
-  test('starts a branch left by an earlier attempt again from the validated main', async () => {
-    noOperationPullRequest()
-    openPullRequests([])
-    nock(API).post(`${TENANTS}/git/refs`).reply(422, {})
-    const reset = nock(API)
-      .patch(`${TENANTS}/git/refs/heads%2Fop%2F${OPERATION}`, {
-        sha: SHA,
-        force: true
-      })
-      .reply(200, {})
-    nock(API).post('/graphql').times(2).reply(200, { data: {} })
-    pullRequestCreated(12)
-    nock(API).post(`${TENANTS}/issues/12/labels`).reply(200, [])
+  test('carries the trace of the request in the commit', async () => {
+    const trace = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01'
+    const commit = commitMutation((input) =>
+      input.message.body.endsWith(`Traceparent: ${trace}`)
+    )
 
-    await expect(
-      submit(commandInput({ env: submission() }))
-    ).resolves.toMatchObject({ outcome: 'pr-raised', number: 12 })
-    expect(reset.isDone()).toBe(true)
+    await submit(commandInput({ env: submission({ AIP_TRACE_PARENT: trace }) }))
+
+    expect(commit.isDone()).toBe(true)
   })
 
-  test('deletes the file for a remove submission', async () => {
-    noOperationPullRequest()
-    openPullRequests([])
-    nock(API).post(`${TENANTS}/git/refs`).reply(201, {})
-    const commit = nock(API)
-      .post(
-        '/graphql',
-        ({ variables }) =>
-          variables.input?.fileChanges?.deletions?.[0]?.path === PATH
-      )
-      .reply(200, { data: {} })
-    pullRequestCreated(13)
-    nock(API).post(`${TENANTS}/issues/13/labels`).reply(200, [])
-    nock(API).post('/graphql').reply(200, { data: {} })
+  test('deletes the file for a remove', async () => {
+    const commit = commitMutation(
+      (input) =>
+        input.fileChanges.deletions[0].path === PATH &&
+        input.message.headline === 'chore(infradev): remove alpha'
+    )
 
     await submit(
       commandInput({
@@ -492,331 +612,178 @@ describe('submit', () => {
     expect(commit.isDone()).toBe(true)
   })
 
-  test('surfaces a failure to create the branch', async () => {
-    noOperationPullRequest()
-    openPullRequests([])
-    nock(API).post(`${TENANTS}/git/refs`).reply(403, {})
-
-    await expect(
-      submit(commandInput({ env: submission() }))
-    ).rejects.toMatchObject({ status: 403 })
-  })
-
-  describe('when nothing on main blocks the pull request', () => {
-    const HEAD = 'b'.repeat(40)
-
-    function newPullRequest(number) {
-      noOperationPullRequest()
-      openPullRequests([])
-      nock(API).post(`${TENANTS}/git/refs`).reply(201, {})
-      nock(API)
-        .post('/graphql', ({ query }) => query.includes('createCommitOnBranch'))
-        .reply(200, { data: {} })
-      pullRequestCreated(number)
-      nock(API).post(`${TENANTS}/issues/${number}/labels`).reply(200, [])
-    }
-
-    // GitHub refuses to arm auto-merge when no required check or review
-    // blocks the pull request.
-    function autoMergeRefused(status = 'clean') {
-      return nock(API)
-        .post('/graphql', ({ query }) =>
-          query.includes('enablePullRequestAutoMerge')
-        )
-        .reply(200, {
-          data: { enablePullRequestAutoMerge: null },
-          errors: [
-            {
-              type: 'UNPROCESSABLE',
-              path: ['enablePullRequestAutoMerge'],
-              message: `Pull request Pull request is in ${status} status`
-            }
-          ]
-        })
-    }
-
-    // The runs GitHub Actions published, unless a run names another App.
-    function checkRuns(runs) {
-      return nock(API)
-        .get(`${TENANTS}/commits/${HEAD}/check-runs`)
-        .query({ check_name: VALIDATE_CHECK, app_id: '15368', per_page: '10' })
-        .reply(200, {
-          total_count: runs.length,
-          check_runs: runs.map((run) => ({ app: { id: 15368 }, ...run }))
-        })
-    }
-
-    function merged(number) {
-      return nock(API)
-        .put(
-          `${TENANTS}/pulls/${number}/merge`,
-          (body) =>
-            body.merge_method === 'squash' &&
-            body.sha === HEAD &&
-            body.commit_title === `chore(infradev): write alpha (#${number})` &&
-            body.commit_message.startsWith(`Operation-Id: ${OPERATION}`)
-        )
-        .reply(200, { merged: true })
-    }
-
-    // A clock that moves only when the step sleeps.
-    function clock() {
-      let now = 1_000_000
-      return {
-        now: () => now,
-        sleep: vi.fn(async (ms) => {
-          now += ms
-        })
-      }
-    }
-
-    test('merges itself once the validate check has passed on the head', async () => {
-      newPullRequest(14)
-      autoMergeRefused()
-      checkRuns([{ id: 1, status: 'completed', conclusion: 'success' }])
-      const merge = merged(14)
-
-      await expect(
-        submit(commandInput({ env: submission() }))
-      ).resolves.toMatchObject({ outcome: 'merged', number: 14 })
-      expect(merge.isDone()).toBe(true)
-      expect(jobSummary()).toContain('### merged')
-    })
-
-    test('waits for the validate check and trusts its newest run', async () => {
-      newPullRequest(15)
-      autoMergeRefused('unstable')
-      checkRuns([])
-      checkRuns([{ id: 2, status: 'in_progress', conclusion: null }])
-      checkRuns([
-        { id: 2, status: 'completed', conclusion: 'failure' },
-        { id: 3, status: 'completed', conclusion: 'success' }
-      ])
-      const merge = merged(15)
-      const timers = clock()
-
-      await expect(
-        submit(commandInput({ env: submission(), timers }))
-      ).resolves.toMatchObject({ outcome: 'merged' })
-      expect(merge.isDone()).toBe(true)
-      expect(timers.sleep).toHaveBeenCalledTimes(2)
-      expect(timers.sleep).toHaveBeenCalledWith(15_000)
-    })
-
-    test('ignores a passing run of the same name from another App', async () => {
-      newPullRequest(19)
-      autoMergeRefused()
-      checkRuns([
-        { id: 6, status: 'completed', conclusion: 'success', app: { id: 999 } },
-        { id: 7, status: 'completed', conclusion: 'failure' }
-      ])
-
-      await expect(
-        submit(commandInput({ env: submission() }))
-      ).rejects.toMatchObject({ outcome: 'checks-failed' })
-    })
-
-    test('waits past a run the concurrency group cancelled for the one that replaced it', async () => {
-      newPullRequest(20)
-      autoMergeRefused()
-      checkRuns([{ id: 8, status: 'completed', conclusion: 'cancelled' }])
-      checkRuns([
-        { id: 8, status: 'completed', conclusion: 'cancelled' },
-        { id: 9, status: 'completed', conclusion: 'success' }
-      ])
-      const merge = merged(20)
-      const timers = clock()
-
-      await expect(
-        submit(commandInput({ env: submission(), timers }))
-      ).resolves.toMatchObject({ outcome: 'merged' })
-      expect(merge.isDone()).toBe(true)
-      expect(timers.sleep).toHaveBeenCalledTimes(1)
-    })
-
-    test('never merges a head whose validate check failed', async () => {
-      newPullRequest(16)
-      autoMergeRefused()
-      checkRuns([{ id: 4, status: 'completed', conclusion: 'failure' }])
-
-      await expect(
-        submit(commandInput({ env: submission() }))
-      ).rejects.toMatchObject({
-        outcome: 'checks-failed',
-        message: expect.stringMatching(
-          /^validate-desired-state \/ validate concluded failure on https:\/\//
-        )
-      })
-    })
-
-    test('leaves the pull request open, reported, past the wait', async () => {
-      newPullRequest(17)
-      autoMergeRefused()
-      checkRuns([]).persist()
-      const warning = vi.fn()
-      const timers = clock()
-      const input = commandInput({
-        env: submission({ AIP_MERGE_WAIT_SECONDS: '20' }),
-        timers
-      })
-      input.core = { ...input.core, warning }
-
-      await expect(submit(input)).resolves.toMatchObject({
-        outcome: 'pr-raised',
-        number: 17
-      })
-      expect(timers.sleep).toHaveBeenCalledTimes(2)
-      expect(warning).toHaveBeenCalledWith(
-        expect.stringContaining('had not completed')
-      )
-    })
-
-    test('surfaces any other auto-merge error', async () => {
-      newPullRequest(18)
-      nock(API)
-        .post('/graphql', ({ query }) =>
-          query.includes('enablePullRequestAutoMerge')
-        )
-        .reply(200, {
-          data: null,
-          errors: [{ type: 'FORBIDDEN', message: 'Resource not accessible' }]
-        })
-
-      await expect(
-        submit(commandInput({ env: submission() }))
-      ).rejects.toMatchObject({ name: 'GraphqlResponseError' })
-    })
-
-    test('completes a retried operation by merging its validated pull request', async () => {
-      nock(API)
-        .get(`${TENANTS}/pulls`)
-        .query(true)
-        .reply(200, [
-          pullRequest({
-            number: 19,
-            title: 'chore(infradev): write alpha',
-            body: `Submitted.\n\nOperation-Id: ${OPERATION}\n`,
-            html_url: 'https://github.com/DEFRA/ai-platform-tenants/pull/19'
-          })
-        ])
-      autoMergeRefused()
-      checkRuns([{ id: 5, status: 'completed', conclusion: 'success' }])
-      const merge = merged(19)
-
-      await expect(
-        submit(commandInput({ env: submission() }))
-      ).resolves.toMatchObject({ outcome: 'merged', number: 19 })
-      expect(merge.isDone()).toBe(true)
-    })
-  })
-})
-
-describe('abandon', () => {
-  function input() {
-    return commandInput({ env: { AIP_OPERATION_ID: OPERATION } })
-  }
-
-  test('closes the pull request and deletes its branch', async () => {
-    nock(API).get(`${TENANTS}/pulls`).query(true).reply(200, [pullRequest()])
-    const close = nock(API)
-      .patch(`${TENANTS}/pulls/7`, { state: 'closed' })
-      .reply(200, {})
-    const remove = nock(API)
-      .delete(`${TENANTS}/git/refs/heads%2Fop%2F${OPERATION}`)
-      .reply(204)
-
-    await expect(abandon(input())).resolves.toEqual({
-      outcome: 'abandoned',
-      number: 7,
-      url: 'https://github.com/DEFRA/ai-platform-tenants/pull/7'
-    })
-    expect(close.isDone()).toBe(true)
-    expect(remove.isDone()).toBe(true)
-  })
-
-  test('leaves a merged pull request alone', async () => {
-    nock(API)
-      .get(`${TENANTS}/pulls`)
-      .query(true)
-      .reply(200, [pullRequest({ merged_at: '2026-10-13T00:00:00Z' })])
-
-    await expect(abandon(input())).resolves.toMatchObject({
-      outcome: 'already-merged'
-    })
-  })
-
-  test('reports nothing to abandon without a pull request', async () => {
-    nock(API).get(`${TENANTS}/pulls`).query(true).reply(200, [])
-
-    await expect(abandon(input())).resolves.toEqual({
-      outcome: 'nothing-to-abandon'
-    })
-  })
-
-  test('tolerates a branch that is already gone', async () => {
-    nock(API)
-      .get(`${TENANTS}/pulls`)
-      .query(true)
-      .reply(200, [pullRequest({ state: 'closed' })])
-    nock(API)
-      .delete(`${TENANTS}/git/refs/heads%2Fop%2F${OPERATION}`)
-      .reply(422, {})
-
-    await expect(abandon(input())).resolves.toMatchObject({
-      outcome: 'abandoned'
-    })
-  })
-})
-
-describe('prune', () => {
-  const OLD = '2026-01-01T00:00:00Z'
-
-  function branches(...refs) {
-    nock(API).get(`${TENANTS}/git/matching-refs/heads%2Fop%2F`).reply(200, refs)
-  }
-
-  test('deletes an old operation branch with no open pull request (R7)', async () => {
-    branches(matchingRef('op/old-operation-1', 'o1'))
-    nock(API).get(`${TENANTS}/git/commits/o1`).reply(200, gitCommit(OLD))
-    nock(API)
-      .get(`${TENANTS}/pulls`)
-      .query({
-        head: `${OWNER}:op/old-operation-1`,
-        state: 'open',
-        per_page: '1'
-      })
-      .reply(200, [])
-    const removed = nock(API)
-      .delete(`${TENANTS}/git/refs/heads%2Fop%2Fold-operation-1`)
-      .reply(204)
-
-    await expect(prune(commandInput({ env: {} }))).resolves.toEqual({
-      deleted: ['op/old-operation-1']
-    })
-    expect(removed.isDone()).toBe(true)
-  })
-
-  test('keeps a recent branch and one with an open pull request', async () => {
-    branches(
-      matchingRef('op/new-operation-1', 'n1'),
-      matchingRef('op/open-operation-1', 'p1')
+  test('writes the document of a revert and says so', async () => {
+    const commit = commitMutation(
+      (input) =>
+        input.fileChanges.additions[0].path === PATH &&
+        input.message.headline === 'chore(infradev): revert alpha'
     )
-    nock(API)
-      .get(`${TENANTS}/git/commits/n1`)
-      .reply(200, gitCommit(new Date().toISOString()))
-    nock(API).get(`${TENANTS}/git/commits/p1`).reply(200, gitCommit(OLD))
-    nock(API).get(`${TENANTS}/pulls`).query(true).reply(200, [pullRequest()])
 
-    await expect(
-      prune(commandInput({ env: { AIP_DAYS: '7' } }))
-    ).resolves.toEqual({
-      deleted: []
+    await submit(commandInput({ env: submission({ AIP_ACTION: 'revert' }) }))
+
+    expect(commit.isDone()).toBe(true)
+  })
+
+  describe('when the head of main has moved', () => {
+    test('stages and validates again on the new head, then commits on it', async () => {
+      commitMutation(() => true, MOVED)
+      const second = commitMutation(
+        (input) => input.expectedHeadOid === NEW_HEAD
+      )
+      const restage = restager({
+        status: 0,
+        stdout: `staged\nmain-sha=${NEW_HEAD}\n`
+      })
+      const timers = clock()
+
+      await expect(
+        submit(commandInput({ env: submission(), timers, run: restage }))
+      ).resolves.toMatchObject({ outcome: 'committed' })
+
+      expect(second.isDone()).toBe(true)
+      expect(restage).toHaveBeenCalledTimes(1)
+      expect(timers.sleep).toHaveBeenCalledWith(1500)
+      const [command, args, options] = restage.mock.calls[0]
+      expect(command).toBe('bash')
+      expect(args).toEqual(['/runner/scripts/desired-state.sh', 'restage'])
+      expect(options.env.AIP_GIT_TOKEN).toBe('github-token')
+    })
+
+    test('gives up after the third attempt with commit-conflict, which the workflow reports as a retryable refusal', async () => {
+      commitMutation(() => true, MOVED)
+      commitMutation(() => true, MOVED)
+      commitMutation(() => true, MOVED)
+      const restage = restager(
+        { status: 0, stdout: `main-sha=${'b1'.repeat(20)}\n` },
+        { status: 0, stdout: `main-sha=${'b2'.repeat(20)}\n` }
+      )
+
+      await expect(
+        submit(
+          commandInput({ env: submission(), timers: clock(), run: restage })
+        )
+      ).rejects.toMatchObject({ outcome: 'commit-conflict' })
+      expect(restage).toHaveBeenCalledTimes(2)
+    })
+
+    test('succeeds on the third attempt', async () => {
+      commitMutation(() => true, MOVED)
+      commitMutation(() => true, MOVED)
+      commitMutation((input) => input.expectedHeadOid === 'b2'.repeat(20))
+      const restage = restager(
+        { status: 0, stdout: `main-sha=${'b1'.repeat(20)}\n` },
+        { status: 0, stdout: `main-sha=${'b2'.repeat(20)}\n` }
+      )
+
+      await expect(
+        submit(
+          commandInput({ env: submission(), timers: clock(), run: restage })
+        )
+      ).resolves.toMatchObject({ outcome: 'committed' })
+    })
+
+    test.each([
+      [3, 'stale-revision'],
+      [1, 'checks-failed']
+    ])(
+      'ends as the restage does when it exits %i: %s',
+      async (status, outcome) => {
+        commitMutation(() => true, MOVED)
+        const restage = restager({ status, stdout: '' })
+
+        await expect(
+          submit(
+            commandInput({ env: submission(), timers: clock(), run: restage })
+          )
+        ).rejects.toMatchObject({ outcome })
+      }
+    )
+
+    test('stops when the restage prints no head', async () => {
+      commitMutation(() => true, MOVED)
+
+      await expect(
+        submit(
+          commandInput({
+            env: submission(),
+            timers: clock(),
+            run: restager({ status: 0, stdout: 'nothing useful\n' })
+          })
+        )
+      ).rejects.toMatchObject({ outcome: 'failed' })
+    })
+
+    test('waits one to three seconds between attempts', async () => {
+      commitMutation(() => true, MOVED)
+      commitMutation(() => true)
+      const sleeps = []
+
+      await submit(
+        commandInput({
+          env: submission(),
+          timers: { sleep: async (ms) => sleeps.push(ms) },
+          run: restager({ status: 0, stdout: `main-sha=${NEW_HEAD}\n` })
+        })
+      )
+
+      expect(sleeps).toHaveLength(1)
+      expect(sleeps[0]).toBeGreaterThanOrEqual(1000)
+      expect(sleeps[0]).toBeLessThanOrEqual(3000)
     })
   })
 
-  test('refuses a number of days that is not a whole number', async () => {
+  test('surfaces any other failure to commit', async () => {
+    nock(API)
+      .post('/graphql')
+      .reply(200, {
+        data: null,
+        errors: [{ type: 'FORBIDDEN', message: 'Resource not accessible' }]
+      })
+
     await expect(
-      prune(commandInput({ env: { AIP_DAYS: '1.5' } }))
-    ).rejects.toMatchObject({ outcome: 'failed' })
+      submit(commandInput({ env: submission(), run: restager() }))
+    ).rejects.toMatchObject({ name: 'GraphqlResponseError' })
+  })
+
+  test('surfaces a GraphQL error that names no message', async () => {
+    nock(API)
+      .post('/graphql')
+      .reply(200, { data: null, errors: [{ type: 'FORBIDDEN' }] })
+
+    await expect(
+      submit(commandInput({ env: submission(), run: restager() }))
+    ).rejects.toMatchObject({ name: 'GraphqlResponseError' })
+  })
+
+  test('surfaces an error that is not from GraphQL', async () => {
+    nock(API).post('/graphql').reply(502, {})
+
+    await expect(
+      submit(commandInput({ env: submission(), run: restager() }))
+    ).rejects.toMatchObject({ status: 502 })
+  })
+})
+
+describe('the real timers and script runner', () => {
+  test('wait, and wait one to three seconds between attempts', async () => {
+    await TIMERS.sleep(1)
+
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const wait = TIMERS.jitter()
+
+      expect(wait).toBeGreaterThanOrEqual(1000)
+      expect(wait).toBeLessThanOrEqual(3000)
+    }
+  })
+
+  test('run a program and report its exit code and output', () => {
+    const result = runScript(
+      process.execPath,
+      ['-e', "console.log('main-sha=x'); process.exit(3)"],
+      { encoding: 'utf8' }
+    )
+
+    expect(result.status).toBe(3)
+    expect(result.stdout).toContain('main-sha=x')
   })
 })

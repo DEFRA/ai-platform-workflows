@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.0.0](https://github.com/DEFRA/ai-platform-workflows/compare/v1.1.1...v2.0.0) (2026-10-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* callers must move to workflows v2. submit-desired-state takes action write, remove or revert (abandon is removed), requires path, and adds cdp_request_id and expected_base. The state repositories' callers move to @v2 in their own pull requests.
+
+### Features
+
+* commit to main directly and send status events (workflows v2) ([#17](https://github.com/DEFRA/ai-platform-workflows/issues/17)) ([75aeb13](https://github.com/DEFRA/ai-platform-workflows/commit/75aeb13f2cddd3627027f503e5c82766e2295677))
+
+
+### Bug Fixes
+
+* pin the release workflows' own actions to the merge commit until v2 exists ([#18](https://github.com/DEFRA/ai-platform-workflows/issues/18)) ([5788716](https://github.com/DEFRA/ai-platform-workflows/commit/5788716391acef47b1d69c4cdc5d0bc7309f056f))
+
 ## [1.1.1](https://github.com/DEFRA/ai-platform-workflows/compare/v1.1.0...v1.1.1) (2026-10-19)
 
 

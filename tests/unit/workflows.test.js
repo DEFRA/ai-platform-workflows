@@ -413,7 +413,7 @@ describe('the publish-event action', () => {
     expect(action.match(/continue-on-error: true/g)).toHaveLength(2)
   })
 
-  test('signs in inside the script, under its 10 second deadline, not in a step of its own', () => {
+  test('signs in inside the script, under its deadline, not in a step of its own', () => {
     expect(action).not.toContain('azure/login')
     expect(action).toContain('scripts/publish-event.sh')
   })

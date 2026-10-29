@@ -40,9 +40,13 @@ function publish(env = {}) {
     ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'runtime-token',
     GITHUB_RUN_ID: '123',
     GITHUB_RUN_ATTEMPT: '2',
-    AIP_PUBLISH_SECONDS: '300',
+    AIP_EVENT_DEADLINE: inSeconds(300),
     ...env
   })
+}
+
+function inSeconds(seconds) {
+  return String(Math.ceil(Date.now() / 1000) + seconds)
 }
 
 function calls(prefix) {
@@ -204,7 +208,8 @@ describe('publish-event.sh', () => {
     ['AIP_EVENTS_CLIENT_ID'],
     ['AZURE_TENANT_ID'],
     ['ACTIONS_ID_TOKEN_REQUEST_URL'],
-    ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']
+    ['ACTIONS_ID_TOKEN_REQUEST_TOKEN'],
+    ['AIP_EVENT_DEADLINE']
   ])('sends nothing, and says so, where %s is not set', (name) => {
     workspace.write('events.json', events('op-00000001'))
 
@@ -400,7 +405,7 @@ describe('publish-event.sh', () => {
 
       const result = publish({
         AIP_TEST_SLEEP: '30',
-        AIP_PUBLISH_SECONDS: '2'
+        AIP_EVENT_DEADLINE: inSeconds(2)
       })
 
       expect(result.status).toBe(0)
@@ -412,7 +417,7 @@ describe('publish-event.sh', () => {
       workspace.write('events.json', events('op-00000001'))
 
       const result = publish({
-        AIP_EVENT_DEADLINE: String(Math.floor(Date.now() / 1000) - 5)
+        AIP_EVENT_DEADLINE: inSeconds(-5)
       })
 
       expect(result.status).toBe(0)
@@ -422,30 +427,13 @@ describe('publish-event.sh', () => {
       expect(workspace.commands()).toEqual([])
     })
 
-    test('keeps to the time build-event left, not to a fresh budget', () => {
-      workspace.write('events.json', events('op-00000001'))
-      const started = Date.now()
-
-      const result = publish({
-        AIP_TEST_SLEEP_CURL: '30',
-        AIP_PUBLISH_SECONDS: '300',
-        AIP_EVENT_DEADLINE: String(Math.ceil(Date.now() / 1000) + 3)
-      })
-
-      expect(result.status).toBe(0)
-      expect(Date.now() - started).toBeLessThan(15_000)
-      expect(result.stdout).toContain(
-        "::warning::publish-event: could not get the job's identity token"
-      )
-    })
-
     test('gives up within its time budget when the sign-in hangs, before any other call', () => {
       workspace.write('events.json', events('op-00000001'))
       const started = Date.now()
 
       const result = publish({
         AIP_TEST_SLEEP_CURL: '30',
-        AIP_PUBLISH_SECONDS: '2'
+        AIP_EVENT_DEADLINE: inSeconds(2)
       })
 
       expect(result.status).toBe(0)

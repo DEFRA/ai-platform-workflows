@@ -11,7 +11,8 @@
 #          call, each in its FIFO group and deduplicated by its ID
 #
 # Bounded, so a deploy never waits on it or fails on it: everything, the
-# sign-in included, shares one deadline (AIP_PUBLISH_SECONDS, 10). Only
+# sign-in included, keeps to the deadline build-event set (AIP_EVENT_DEADLINE,
+# from AIP_PUBLISH_SECONDS, whose default is in src/events.js). Only
 # transient failures are retried, at most AIP_PUBLISH_RETRIES (2) times: curl
 # and the AWS CLI retry timeouts, throttling and server errors themselves, and
 # an event SQS failed on its side is sent again; a refusal is final. An event
@@ -21,22 +22,17 @@
 # In: AIP_EVENT_FILE (a JSON array of {groupId, deduplicationId, body}),
 #     AIP_EVENTS_QUEUE_URL, AIP_EVENTS_ROLE_ARN, AIP_EVENTS_AUDIENCE,
 #     AIP_EVENTS_CLIENT_ID, AZURE_TENANT_ID, ACTIONS_ID_TOKEN_REQUEST_URL and
-#     _TOKEN (the job's id-token: write), RUNNER_TEMP, GITHUB_RUN_ID,
-#     GITHUB_RUN_ATTEMPT, optionally AWS_REGION (eu-west-2).
+#     _TOKEN (the job's id-token: write), AIP_EVENT_DEADLINE (epoch seconds,
+#     from build-event), RUNNER_TEMP, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT,
+#     optionally AWS_REGION (eu-west-2).
 set -euo pipefail
 
-budget="${AIP_PUBLISH_SECONDS:-10}"
 retries="${AIP_PUBLISH_RETRIES:-2}"
 region="${AWS_REGION:-eu-west-2}"
-# build-event looked up the commits before this, inside the same budget: it
-# leaves AIP_EVENT_DEADLINE (epoch seconds) for the time that is left.
+deadline=""
 if [[ "${AIP_EVENT_DEADLINE:-}" =~ ^[0-9]+$ ]]; then
-  left_to_deadline=$((AIP_EVENT_DEADLINE - $(date +%s)))
-  if ((left_to_deadline < budget)); then
-    budget=$left_to_deadline
-  fi
+  deadline=$((SECONDS + AIP_EVENT_DEADLINE - $(date +%s)))
 fi
-deadline=$((SECONDS + budget))
 export AWS_RETRY_MODE=standard AWS_MAX_ATTEMPTS=$((retries + 1))
 
 # The run's summary page, so an event that was not sent is seen without
@@ -99,8 +95,8 @@ publish() {
 
   if [[ -z "${AIP_EVENTS_QUEUE_URL:-}" || -z "${AIP_EVENTS_ROLE_ARN:-}" || -z "${AIP_EVENTS_AUDIENCE:-}" ||
     -z "${AIP_EVENTS_CLIENT_ID:-}" || -z "${AZURE_TENANT_ID:-}" ||
-    -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
-    echo "::notice::AIP_EVENTS_QUEUE_URL, AIP_EVENTS_ROLE_ARN, AIP_EVENTS_AUDIENCE, AIP_EVENTS_CLIENT_ID, AZURE_TENANT_ID and the job's id-token permission are not all set here, so no event is sent."
+    -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" || -z "$deadline" ]]; then
+    echo "::notice::AIP_EVENTS_QUEUE_URL, AIP_EVENTS_ROLE_ARN, AIP_EVENTS_AUDIENCE, AIP_EVENTS_CLIENT_ID, AZURE_TENANT_ID, the job's id-token permission and build-event's AIP_EVENT_DEADLINE are not all set here, so no event is sent."
     return 0
   fi
 

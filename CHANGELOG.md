@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.3](https://github.com/DEFRA/ai-platform-workflows/compare/v2.0.2...v2.0.3) (2026-10-29)
+
+
+### Bug Fixes
+
+* send status events faster, in batches, and show what was not sent ([#24](https://github.com/DEFRA/ai-platform-workflows/issues/24)) ([d0813d1](https://github.com/DEFRA/ai-platform-workflows/commit/d0813d1d34080b9ba0a538366e7aaaa3cb7a40f6))
+
 ## [2.0.2](https://github.com/DEFRA/ai-platform-workflows/compare/v2.0.1...v2.0.2) (2026-10-29)
 
 

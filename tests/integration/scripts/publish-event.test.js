@@ -255,6 +255,25 @@ describe('publish-event.sh', () => {
     expect(workspace.summary()).toBe('')
   })
 
+  test('only notes it where the tenant ID, a repository variable the deploy also uses, is the only setting', () => {
+    workspace.write('events.json', events('op-00000001'))
+
+    const result = publish({
+      AIP_EVENTS_QUEUE_URL: '',
+      AIP_EVENTS_ROLE_ARN: '',
+      AIP_EVENTS_AUDIENCE: '',
+      AIP_EVENTS_CLIENT_ID: ''
+    })
+
+    expect(result.status).toBe(0)
+    expect(workspace.commands()).toEqual([])
+    expect(result.stdout).toContain(
+      '::notice::The events queue is not configured here'
+    )
+    expect(result.stdout).not.toContain('::warning::')
+    expect(workspace.summary()).toBe('')
+  })
+
   describe('when the queue or the identity is unreachable, the run still passes', () => {
     test("warns with Entra's reason, and gives up, when the token exchange is refused", () => {
       workspace.write('events.json', events('op-00000001'))

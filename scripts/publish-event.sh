@@ -94,7 +94,7 @@ publish() {
   fi
 
   local name joined configured=0 missing=()
-  for name in AIP_EVENTS_QUEUE_URL AIP_EVENTS_ROLE_ARN AIP_EVENTS_AUDIENCE AIP_EVENTS_CLIENT_ID AZURE_TENANT_ID; do
+  for name in AIP_EVENTS_QUEUE_URL AIP_EVENTS_ROLE_ARN AIP_EVENTS_AUDIENCE AIP_EVENTS_CLIENT_ID; do
     if [[ -n "${!name:-}" ]]; then
       configured=$((configured + 1))
     else
@@ -103,9 +103,14 @@ publish() {
   done
   # None set is an environment without the queue, which the workflows allow;
   # some set is a mistake that would lose every event, so it is a warning.
+  # AZURE_TENANT_ID is a repository variable the deploy also uses, so it alone
+  # says nothing about the queue and is checked only once the queue is set.
   if ((configured == 0)); then
-    echo "::notice::The events queue is not configured here (no AIP_EVENTS_* or AZURE_TENANT_ID), so no event is sent."
+    echo "::notice::The events queue is not configured here (no AIP_EVENTS_*), so no event is sent."
     return 0
+  fi
+  if [[ -z "${AZURE_TENANT_ID:-}" ]]; then
+    missing+=("AZURE_TENANT_ID")
   fi
   if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
     missing+=("the job's id-token: write permission")

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.4](https://github.com/DEFRA/ai-platform-workflows/compare/v2.0.3...v2.0.4) (2026-10-29)
+
+
+### Performance Improvements
+
+* start the apply sooner and run Terraform with parallelism 20 ([#27](https://github.com/DEFRA/ai-platform-workflows/issues/27)) ([4534e21](https://github.com/DEFRA/ai-platform-workflows/commit/4534e213565ad09fff8563dad493ae3139327720))
+
 ## [2.0.3](https://github.com/DEFRA/ai-platform-workflows/compare/v2.0.2...v2.0.3) (2026-10-29)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/DEFRA/ai-platform-workflows/compare/v2.0.0...v2.0.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* check the rulesets' bypass lists only where the token can read them ([#20](https://github.com/DEFRA/ai-platform-workflows/issues/20)) ([8adaa1c](https://github.com/DEFRA/ai-platform-workflows/commit/8adaa1c819e488647b98e1561f265cd93aa08b3a))
+
 ## [2.0.0](https://github.com/DEFRA/ai-platform-workflows/compare/v1.1.1...v2.0.0) (2026-10-28)
 
 

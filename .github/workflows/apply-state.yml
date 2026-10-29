@@ -200,9 +200,10 @@ jobs:
           AIP_ALL: ${{ inputs.all }}
           AIP_WORKFLOW_REF: ${{ github.workflow_ref }}
 
-      # Reads the repository's rulesets, bypass lists included, which needs
-      # Administration: read (the apply refuses to run if aip-machine-main or
-      # aip-machine-protect changed).
+      # Reads the repository's rulesets, which needs Administration: read (the
+      # apply refuses to run if aip-machine-main or aip-machine-protect changed;
+      # their bypass lists are left to settings-drift, as this token cannot see
+      # them).
       - id: checker
         uses: actions/create-github-app-token@v3
         with:

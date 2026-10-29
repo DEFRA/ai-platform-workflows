@@ -30,37 +30,65 @@ esac
 [[ "$*" != *"\${AIP_TEST_FAIL:-none}"* ]]
 `
 
-// Records each call to the Azure CLI; a call matching AIP_TEST_FAIL fails,
-// and one that asks for a token prints a fake one (AIP_TEST_TOKEN) after
-// AIP_TEST_SLEEP.
+// Records each call to the Azure CLI; a call matching AIP_TEST_FAIL fails.
 const FAKE_AZ = `#!/usr/bin/env bash
 printf 'az %s\\n' "$*" >> "$AIP_TEST_LOG"
-[[ -n "\${AIP_TEST_SLEEP:-}" && "$*" == *get-access-token* ]] && exec sleep "$AIP_TEST_SLEEP"
-[[ "$*" == *get-access-token* ]] && echo "\${AIP_TEST_TOKEN:-fake-entra-token}"
 [[ "$*" != *"\${AIP_TEST_FAIL:-none}"* ]]
 `
 
-// Records each call to curl, as its URL only (the request header holds a
-// token), and writes a fake OIDC token to the --output file; the call fails
-// when AIP_TEST_FAIL is "curl" and waits AIP_TEST_SLEEP_CURL seconds.
+// Records each call to curl as its URL (a header holds a token), its --retry,
+// its form fields, and the content of a field read from a file. The job's
+// OIDC request writes {"value":"fake-oidc"} (or AIP_TEST_CURL_BODY) to
+// --output; Entra's token endpoint writes an access token (AIP_TEST_TOKEN), a
+// refusal when AIP_TEST_FAIL is "token-exchange", or a page that is not JSON
+// when it is "token-exchange-html". Every call fails when
+// AIP_TEST_FAIL is "curl" and waits AIP_TEST_SLEEP_CURL seconds.
 const FAKE_CURL = `#!/usr/bin/env bash
 out=''
 for ((i = 1; i <= $#; i++)); do
-  [[ "\${!i}" == --output ]] && { j=$((i + 1)); out="\${!j}"; }
+  j=$((i + 1))
+  case "\${!i}" in
+    --output) out="\${!j}" ;;
+    --retry) retry="\${!j}" ;;
+    --data-urlencode)
+      field="\${!j}"
+      if [[ "$field" =~ ^[a-z_]+@ ]]; then
+        printf 'form-file %s %s\\n' "\${field%%@*}" "$(cat "\${field#*@}")" >> "$AIP_TEST_LOG"
+      else
+        printf 'form %s\\n' "$field" >> "$AIP_TEST_LOG"
+      fi ;;
+  esac
 done
-printf 'curl %s\\n' "\${@: -1}" >> "$AIP_TEST_LOG"
+url="\${@: -1}"
+printf 'curl %s\\n' "$url" >> "$AIP_TEST_LOG"
+printf 'curl-retry %s\\n' "\${retry:-none}" >> "$AIP_TEST_LOG"
 [[ -n "\${AIP_TEST_SLEEP_CURL:-}" ]] && exec sleep "$AIP_TEST_SLEEP_CURL"
 [[ "\${AIP_TEST_FAIL:-none}" == curl ]] && exit 22
-body="\${AIP_TEST_CURL_BODY:-}"
-[[ -z "$body" ]] && body='{"value":"fake-oidc"}'
+if [[ "$url" == */oauth2/v2.0/token ]]; then
+  if [[ "\${AIP_TEST_FAIL:-none}" == token-exchange ]]; then
+    body='{"error":"invalid_client","error_codes":[700213]}'
+  elif [[ "\${AIP_TEST_FAIL:-none}" == token-exchange-html ]]; then
+    body='<html>Service unavailable</html>'
+  else
+    body="{\\"access_token\\":\\"\${AIP_TEST_TOKEN:-fake-entra-token}\\"}"
+  fi
+else
+  body="\${AIP_TEST_CURL_BODY:-}"
+  [[ -z "$body" ]] && body='{"value":"fake-oidc"}'
+fi
 [[ -n "$out" ]] && echo "$body" > "$out"
 exit 0
 `
 
-// Records each call to the AWS CLI, and the credentials a send used; a call
-// matching AIP_TEST_FAIL fails, and every call waits AIP_TEST_SLEEP seconds.
+// Records each call to the AWS CLI, its retry settings, and the credentials a
+// send used; a call matching AIP_TEST_FAIL fails, and every call waits
+// AIP_TEST_SLEEP seconds. A batch logs its --entries (read from file:// as
+// the AWS CLI does) and fails, as SQS does per entry, the events of group
+// AIP_TEST_RETRY_GROUP on SQS's side and those of AIP_TEST_REFUSE_GROUP as
+// the sender's fault, with AIP_TEST_REFUSE_MESSAGE.
 const FAKE_AWS = `#!/usr/bin/env bash
 printf 'aws %s\\n' "$*" >> "$AIP_TEST_LOG"
+printf 'aws-retry %s %s\\n' "\${AWS_RETRY_MODE:-}" "\${AWS_MAX_ATTEMPTS:-}" >> "$AIP_TEST_LOG"
 [[ -n "\${AIP_TEST_SLEEP:-}" ]] && exec sleep "$AIP_TEST_SLEEP"
 if [[ "$*" == *assume-role-with-web-identity* ]]; then
   for arg in "$@"; do
@@ -69,7 +97,22 @@ if [[ "$*" == *assume-role-with-web-identity* ]]; then
   echo '{"AccessKeyId":"AKIAFAKE","SecretAccessKey":"fake-secret","SessionToken":"fake-session"}'
 fi
 [[ "$*" == *send-message* ]] && printf 'credentials %s %s %s\\n' "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN" >> "$AIP_TEST_LOG"
-[[ "$*" != *"\${AIP_TEST_FAIL:-none}"* ]]
+[[ "$*" != *"\${AIP_TEST_FAIL:-none}"* ]] || exit 1
+if [[ "$*" == *send-message-batch* ]]; then
+  for ((i = 1; i <= $#; i++)); do
+    [[ "\${!i}" == --entries ]] && { j=$((i + 1)); entries="\${!j}"; }
+  done
+  [[ "$entries" == file://* ]] && entries="$(cat "\${entries#file://}")"
+  printf 'entries %s\\n' "$entries" >> "$AIP_TEST_LOG"
+  jq -c --arg retry "\${AIP_TEST_RETRY_GROUP:-}" --arg refuse "\${AIP_TEST_REFUSE_GROUP:-}" \\
+    --arg message "\${AIP_TEST_REFUSE_MESSAGE:-Invalid binary character}" '{
+    Successful: [.[] | select(.MessageGroupId != $retry and .MessageGroupId != $refuse) | {Id}],
+    Failed: ([.[] | select(.MessageGroupId == $retry)
+      | {Id, SenderFault: false, Code: "ServiceUnavailable"}]
+      + [.[] | select(.MessageGroupId == $refuse)
+      | {Id, SenderFault: true, Code: "InvalidParameterValue", Message: $message}])}' <<< "$entries"
+fi
+exit 0
 `
 
 // Records each call to the GitHub CLI. A read answers from

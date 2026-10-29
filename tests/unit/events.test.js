@@ -1029,8 +1029,8 @@ describe('buildEvent', () => {
 
     const after = Math.ceil(Date.now() / 1000)
     const deadline = Number(exportedVariables().AIP_EVENT_DEADLINE)
-    expect(deadline).toBeGreaterThanOrEqual(before + 10)
-    expect(deadline).toBeLessThanOrEqual(after + 10)
+    expect(deadline).toBeGreaterThanOrEqual(before + 30)
+    expect(deadline).toBeLessThanOrEqual(after + 30)
   })
 
   test('honours AIP_PUBLISH_SECONDS for that time', async () => {

@@ -71,11 +71,12 @@ status the workflows send through `build-event` and checks it with Ajv against a
 
 The [`publish-event`](.github/actions/publish-event/action.yml) action first keeps each event in the run report's
 `events[]` (submit and `pause.yml` upload a report that holds only them), so an event that cannot be sent is still
-kept with the run. It then signs in with `azure/login` as the events identity (`AIP_EVENTS_CLIENT_ID`), gets a token
-for `AIP_EVENTS_AUDIENCE`, assumes `AIP_EVENTS_ROLE_ARN` and sends to `AIP_EVENTS_QUEUE_URL`, in the FIFO group of the
+kept with the run. It then exchanges the job's OIDC token at Entra for a token for `AIP_EVENTS_AUDIENCE` as the events
+identity (`AIP_EVENTS_CLIENT_ID`), assumes `AIP_EVENTS_ROLE_ARN` and sends to `AIP_EVENTS_QUEUE_URL` in batches of up
+to 10, each event in the FIFO group of the
 operation (the commit for `break-glass` and for an apply no operation asked for, the environment for `pause`) and deduplicated by the event ID. It is bounded
-to 10 seconds in all, the lookups of an apply's commits and pull requests included (a lookup that outlives the budget
-is aborted and the run report keeps no event), with 2 retries on the send, and is `continue-on-error`: a deploy never
+to 30 seconds in all, the lookups of an apply's commits and pull requests included (a lookup that outlives the budget
+is aborted and the run report keeps no event), with up to 2 retries of transient failures only (a refusal is final), and is `continue-on-error`: a deploy never
 fails on it. An event from a run that no
 operation asked for, sent while SQS is down for the whole run, may never reach the portal history; the run report and
 GitHub's run history still hold it (accepted gap, plan section 15).

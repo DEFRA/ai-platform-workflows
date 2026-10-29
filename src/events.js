@@ -27,7 +27,7 @@ const APPLY_FAILED = 'The apply failed; the run has the details.'
 const MAX_MESSAGE = 500
 // The time reporting may take in all (AIP_PUBLISH_SECONDS): the lookups here
 // and the send in scripts/publish-event.sh share it.
-const DEFAULT_PUBLISH_SECONDS = 10
+const DEFAULT_PUBLISH_SECONDS = 30
 const PRINCIPAL_APP = /^[a-z][a-z0-9-]{0,38}$/
 const USER_ID = /^[1-9][0-9]{0,19}$/
 
@@ -396,7 +396,8 @@ function factsOf(context, env) {
  * AIP_EVENT_OUT, AIP_ENVIRONMENT, and for a submit AIP_ACTION, AIP_PATH,
  * AIP_REQUESTER, AIP_TRACE_PARENT, AIP_CDP_REQUEST_ID, AIP_COMMIT_SHA and
  * AIP_COMMITTED_AT. The lookups of the apply's commits and pull requests
- * share one deadline with the send (AIP_PUBLISH_SECONDS, 10): a request that
+ * share one deadline with the send (AIP_PUBLISH_SECONDS, or
+ * DEFAULT_PUBLISH_SECONDS): a request that
  * outlives it is aborted, nothing is built and a warning says so. On success
  * it exports AIP_EVENT_DEADLINE (epoch seconds), which `publish-event.sh`
  * keeps to.

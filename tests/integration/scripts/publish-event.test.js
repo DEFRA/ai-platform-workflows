@@ -163,6 +163,80 @@ describe('publish-event.sh', () => {
       expect(calls('aws sqs')).toEqual([])
     })
 
+    test('says which issuer, audience, subject and version the refused token had, and nothing else from it', () => {
+      workspace.write('events.json', events('op-00000001'))
+      const part = (value) =>
+        Buffer.from(JSON.stringify(value)).toString('base64url')
+      const token = `${part({ alg: 'RS256' })}.${part({
+        iss: 'https://login.microsoftonline.com/tenant/v2.0',
+        aud: 'audience-guid',
+        sub: 'subject-guid',
+        ver: '2.0',
+        appid: 'not-reported'
+      })}.signature-not-reported`
+
+      const result = publish({
+        AIP_TEST_TOKEN: token,
+        AIP_TEST_FAIL: 'assume-role-with-web-identity'
+      })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain(
+        '::notice::publish-event: the token the role refused had iss=https://login.microsoftonline.com/tenant/v2.0 aud=audience-guid sub=subject- ver=2.0'
+      )
+      const shown = result.stdout
+        .split('\n')
+        .filter((line) => !line.startsWith('::add-mask::'))
+        .join('\n')
+
+      expect(shown).not.toContain('not-reported')
+    })
+
+    test('lets no claim write a workflow command or show the whole subject', () => {
+      workspace.write('events.json', events('op-00000001'))
+      const part = (value) =>
+        Buffer.from(JSON.stringify(value)).toString('base64url')
+      const token = `${part({ alg: 'RS256' })}.${part({
+        iss: 'issuer',
+        aud: 'audience\n::error::injected',
+        sub: 'subject-guid-with-the-rest',
+        ver: '2.0'
+      })}.signature`
+
+      const result = publish({
+        AIP_TEST_TOKEN: token,
+        AIP_TEST_FAIL: 'assume-role-with-web-identity'
+      })
+      const shown = result.stdout
+        .split('\n')
+        .filter((line) => !line.startsWith('::add-mask::'))
+
+      expect(shown).toContain(
+        '::notice::publish-event: the token the role refused had iss=issuer aud=audience::error::injected sub=subject- ver=2.0'
+      )
+      expect(shown.join('\n')).not.toContain('with-the-rest')
+    })
+
+    test.each([
+      ['an opaque string', undefined],
+      ['base64 JSON with no dots', 'e30'],
+      ['two parts only', 'e30.e30'],
+      ['four parts', 'e30.e30.e30.e30']
+    ])(
+      'reports no claims when the refused token is not a JWT (%s)',
+      (_what, token) => {
+        workspace.write('events.json', events('op-00000001'))
+
+        const result = publish({
+          AIP_TEST_FAIL: 'assume-role-with-web-identity',
+          ...(token && { AIP_TEST_TOKEN: token })
+        })
+
+        expect(result.stdout).toContain('could not assume the events role')
+        expect(result.stdout).not.toContain('the token the role refused had')
+      }
+    )
+
     test('retries a send twice, then warns, and still tries the next event', () => {
       workspace.write('events.json', events('op-00000001', 'op-00000002'))
 

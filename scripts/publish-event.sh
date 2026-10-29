@@ -68,6 +68,22 @@ mask() {
   echo "::add-mask::$1"
 }
 
+# iss, aud, sub (its first 8 characters: enough to tell which identity, not
+# the object ID of a public log) and ver of a JWT: what the role's trust must
+# match when it refuses the token. One line with no control characters, so no
+# claim can write a workflow command. Empty when it is not a JWT.
+claims() {
+  local payload
+  [[ "$1" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$ ]] || return 0
+  payload="$(cut -d. -f2 <<< "$1" | tr '_-' '/+')"
+  while ((${#payload} % 4 != 0)); do
+    payload+="="
+  done
+  base64 -d <<< "$payload" 2> /dev/null |
+    jq -r '"iss=\(.iss) aud=\(.aud) sub=\(.sub | tostring | .[0:8]) ver=\(.ver)"' 2> /dev/null |
+    tr -d '\000-\037' || true
+}
+
 publish() {
   local file="${AIP_EVENT_FILE:-}"
   if [[ -z "$file" || ! -s "$file" ]]; then
@@ -89,7 +105,7 @@ publish() {
 
   local work="${RUNNER_TEMP:?}/aip-events"
   local token_file="$work/token" oidc_file="$work/oidc.json"
-  local token credentials oidc
+  local token credentials oidc seen
   rm -rf "$work"
   (umask 077 && mkdir -p "$work")
   trap 'rm -rf "$work"' RETURN
@@ -133,6 +149,10 @@ publish() {
     --web-identity-token "file://$token_file" --duration-seconds 900 \
     --query Credentials --output json)" || {
     warn "could not assume the events role"
+    seen="$(claims "$token")"
+    if [[ -n "$seen" ]]; then
+      echo "::notice::publish-event: the token the role refused had $seen"
+    fi
     return 0
   }
 

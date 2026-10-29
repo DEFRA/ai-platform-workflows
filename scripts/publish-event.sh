@@ -68,8 +68,10 @@ mask() {
   echo "::add-mask::$1"
 }
 
-# iss, aud, sub and ver of a JWT: identifiers, not secrets, and what the role's
-# trust must match when it refuses the token. Empty when it is not a JWT.
+# iss, aud, sub (its first 8 characters: enough to tell which identity, not
+# the object ID of a public log) and ver of a JWT: what the role's trust must
+# match when it refuses the token. One line with no control characters, so no
+# claim can write a workflow command. Empty when it is not a JWT.
 claims() {
   local payload
   payload="$(cut -d. -f2 <<< "$1" | tr '_-' '/+')"
@@ -77,7 +79,8 @@ claims() {
     payload+="="
   done
   base64 -d <<< "$payload" 2> /dev/null |
-    jq -r '"iss=\(.iss) aud=\(.aud) sub=\(.sub) ver=\(.ver)"' 2> /dev/null || true
+    jq -r '"iss=\(.iss) aud=\(.aud) sub=\(.sub | tostring | .[0:8]) ver=\(.ver)"' 2> /dev/null |
+    tr -d '\000-\037' || true
 }
 
 publish() {

@@ -182,7 +182,7 @@ describe('publish-event.sh', () => {
 
       expect(result.status).toBe(0)
       expect(result.stdout).toContain(
-        '::notice::publish-event: the token the role refused had iss=https://login.microsoftonline.com/tenant/v2.0 aud=audience-guid sub=subject-guid ver=2.0'
+        '::notice::publish-event: the token the role refused had iss=https://login.microsoftonline.com/tenant/v2.0 aud=audience-guid sub=subject- ver=2.0'
       )
       const shown = result.stdout
         .split('\n')
@@ -190,6 +190,31 @@ describe('publish-event.sh', () => {
         .join('\n')
 
       expect(shown).not.toContain('not-reported')
+    })
+
+    test('lets no claim write a workflow command or show the whole subject', () => {
+      workspace.write('events.json', events('op-00000001'))
+      const part = (value) =>
+        Buffer.from(JSON.stringify(value)).toString('base64url')
+      const token = `${part({ alg: 'RS256' })}.${part({
+        iss: 'issuer',
+        aud: 'audience\n::error::injected',
+        sub: 'subject-guid-with-the-rest',
+        ver: '2.0'
+      })}.signature`
+
+      const result = publish({
+        AIP_TEST_TOKEN: token,
+        AIP_TEST_FAIL: 'assume-role-with-web-identity'
+      })
+      const shown = result.stdout
+        .split('\n')
+        .filter((line) => !line.startsWith('::add-mask::'))
+
+      expect(shown).toContain(
+        '::notice::publish-event: the token the role refused had iss=issuer aud=audience::error::injected sub=subject- ver=2.0'
+      )
+      expect(shown.join('\n')).not.toContain('with-the-rest')
     })
 
     test('reports no claims when the refused token is not a JWT', () => {

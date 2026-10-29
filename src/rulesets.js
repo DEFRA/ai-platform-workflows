@@ -36,6 +36,13 @@ async function submitAppIds(github) {
   return ids
 }
 
+// GitHub leaves bypass_actors out of a ruleset for a caller without write
+// access to it, as the App's read-only token is. The scheduled settings-drift
+// run holds the bypass lists to the design with an admin-read token instead.
+function hasBypassList(ruleset) {
+  return Array.isArray(ruleset.bypass_actors)
+}
+
 function ruleOf(ruleset, type) {
   return ruleset.rules?.find((rule) => rule.type === type)
 }
@@ -70,31 +77,28 @@ function requiresValidation(ruleset) {
 function checkMain(ruleset, appIds) {
   checkScope(MAIN, ruleset)
 
-  const bypass = ruleset.bypass_actors
-
-  if (!Array.isArray(bypass)) {
-    throw changed(
-      `${MAIN} has no bypass list the token can read; the App needs Administration: read on this repository`
+  if (hasBypassList(ruleset)) {
+    const bypass = ruleset.bypass_actors
+    const stray = bypass.find(
+      (actor) =>
+        actor.actor_type !== 'Integration' ||
+        actor.bypass_mode !== 'always' ||
+        !appIds.includes(actor.actor_id)
     )
-  }
 
-  const stray = bypass.find(
-    (actor) =>
-      actor.actor_type !== 'Integration' ||
-      actor.bypass_mode !== 'always' ||
-      !appIds.includes(actor.actor_id)
-  )
-
-  if (stray || bypass.length === 0) {
-    throw changed(
-      `${MAIN} has a bypass list that is not the submit Apps alone: ${JSON.stringify(
-        bypass.map(({ actor_type: type, actor_id: id, bypass_mode: mode }) => ({
-          type,
-          id,
-          mode
-        }))
-      )}`
-    )
+    if (stray || bypass.length === 0) {
+      throw changed(
+        `${MAIN} has a bypass list that is not the submit Apps alone: ${JSON.stringify(
+          bypass.map(
+            ({ actor_type: type, actor_id: id, bypass_mode: mode }) => ({
+              type,
+              id,
+              mode
+            })
+          )
+        )}`
+      )
+    }
   }
 
   const review = ruleOf(ruleset, 'pull_request')?.parameters
@@ -118,10 +122,7 @@ function checkMain(ruleset, appIds) {
 function checkProtect(ruleset) {
   checkScope(PROTECT, ruleset)
 
-  if (
-    !Array.isArray(ruleset.bypass_actors) ||
-    ruleset.bypass_actors.length > 0
-  ) {
+  if (hasBypassList(ruleset) && ruleset.bypass_actors.length > 0) {
     throw changed(`${PROTECT} has a bypass list; it must have none`)
   }
 
@@ -141,9 +142,12 @@ function checkProtect(ruleset) {
  * repository admin who can relax these can commit to main without review
  * (accepted residual risk, §15; this makes it noticed, not impossible).
  *
- * Reading `bypass_actors` needs Administration: read on the token.
+ * The bypass lists are checked only where the token can see them: GitHub
+ * returns `bypass_actors` to callers with write access to the ruleset alone,
+ * so with the App's read-only token that part is left to settings-drift.
  *
- * @param {object} github - Client with that read; the App's.
+ * @param {object} github - Client with Administration: read; the App's.
+ * @param {{owner: string, repo: string}} repository - The state repository.
  * @param {{owner: string, repo: string}} repository - The state repository.
  * @returns {Promise<void>} Resolves when the rulesets are as expected.
  * @throws {OutcomeError} `rulesets-changed` when they are not.

@@ -114,7 +114,8 @@ and the run report. Terraform signs in to Azure by OIDC through `ARM_*` variable
 The apply refuses to run when the state repository's rulesets are not as the design has them: `aip-machine-main`
 and `aip-machine-protect` must both exist and be active, the first bypassed by the submit Apps alone and still
 requiring a pull request with a code-owner review and the check, the second bypassed by no one (plan section 15,
-mitigation 2). Reading the bypass lists needs `Administration: read` on the GitOps App's installation.
+mitigation 2). GitHub returns the bypass lists only to a caller with write access to the ruleset, so the apply
+checks them only when its read-only token can see them; the scheduled settings-drift run holds them to the design.
 
 | Part                                                        | What                                                                                                                                                                                                                    |
 | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

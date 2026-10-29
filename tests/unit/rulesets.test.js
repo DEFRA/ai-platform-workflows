@@ -196,14 +196,34 @@ describe('verifyRulesets', () => {
         ]
       }
     ],
-    ['no bypass at all, which stops the App committing', { bypass_actors: [] }],
-    ['a bypass list it cannot read', { bypass_actors: undefined }]
+    ['no bypass at all, which stops the App committing', { bypass_actors: [] }]
   ])('refuses aip-machine-main with %s', async (_why, overrides) => {
     given({ main: machineMain(overrides) })
 
     await expect(verify()).rejects.toMatchObject({
       outcome: 'rulesets-changed',
       message: expect.stringContaining('aip-machine-main')
+    })
+  })
+
+  test('passes when the token cannot read the bypass lists, as GitHub omits them without write access', async () => {
+    given({
+      main: machineMain({ bypass_actors: undefined }),
+      protect: machineProtect({ bypass_actors: undefined })
+    })
+
+    await expect(verify()).resolves.toBeUndefined()
+  })
+
+  test('still refuses the other changes when the bypass lists are unreadable', async () => {
+    given({
+      main: machineMain({ bypass_actors: undefined, enforcement: 'evaluate' }),
+      protect: machineProtect({ bypass_actors: undefined })
+    })
+
+    await expect(verify()).rejects.toMatchObject({
+      outcome: 'rulesets-changed',
+      message: expect.stringContaining('aip-machine-main is not active')
     })
   })
 

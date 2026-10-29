@@ -31,11 +31,12 @@ esac
 `
 
 // Records each call to the Azure CLI; a call matching AIP_TEST_FAIL fails,
-// and one that asks for a token prints a fake one after AIP_TEST_SLEEP.
+// and one that asks for a token prints a fake one (AIP_TEST_TOKEN) after
+// AIP_TEST_SLEEP.
 const FAKE_AZ = `#!/usr/bin/env bash
 printf 'az %s\\n' "$*" >> "$AIP_TEST_LOG"
 [[ -n "\${AIP_TEST_SLEEP:-}" && "$*" == *get-access-token* ]] && exec sleep "$AIP_TEST_SLEEP"
-[[ "$*" == *get-access-token* ]] && echo fake-entra-token
+[[ "$*" == *get-access-token* ]] && echo "\${AIP_TEST_TOKEN:-fake-entra-token}"
 [[ "$*" != *"\${AIP_TEST_FAIL:-none}"* ]]
 `
 

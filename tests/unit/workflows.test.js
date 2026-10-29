@@ -194,15 +194,20 @@ describe('apply-state.yml', () => {
     expect(text).toMatch(/^ {6}force_unlock:$/m)
   })
 
-  test('checks who dispatched before it resolves anything, passing the caller workflow for reconcile-all', () => {
-    const access = job(file, 'access')
+  test('checks who dispatched before it mints a token or resolves anything, passing the caller workflow for reconcile-all', () => {
+    const resolve = job(file, 'resolve')
+    const check = resolve.indexOf('command: admin-check')
 
-    expect(access).toContain('AIP_ADMIN_SCOPE: apply')
-    expect(access).toContain('AIP_WORKFLOW_REF: ${{ github.workflow_ref }}')
-    expect(access).toContain(
+    expect(check).toBeGreaterThan(-1)
+    expect(check).toBeLessThan(resolve.indexOf('create-github-app-token'))
+    expect(check).toBeLessThan(resolve.indexOf('command: resolve-apply'))
+    expect(resolve).toContain('AIP_ADMIN_SCOPE: apply')
+    expect(resolve).toContain('AIP_WORKFLOW_REF: ${{ github.workflow_ref }}')
+    expect(resolve).toContain(
       "AIP_BREAK_GLASS_INPUTS: ${{ inputs.allow_destroy || inputs.force_unlock != '' }}"
     )
-    expect(job(file, 'resolve')).toMatch(/^ {4}needs: access$/m)
+    expect(resolve).not.toMatch(/^ {4}needs:/m)
+    expect(read(`.github/workflows/${file}`)).not.toMatch(/^ {2}access:$/m)
   })
 
   test('reads each environment pause in its {env}-events Environment before the apply starts', () => {
@@ -226,7 +231,7 @@ describe('apply-state.yml', () => {
       /^ {4}permissions:\n {6}contents: read\n {6}deployments: read\n {6}id-token: write\n(?: {6}#.*\n)* {6}pull-requests: read\n/m
     )
 
-    for (const other of ['access', 'resolve', 'gate', 'tenants']) {
+    for (const other of ['resolve', 'gate', 'tenants']) {
       expect(job(file, other)).not.toContain('pull-requests')
     }
 

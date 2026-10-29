@@ -125,7 +125,7 @@ describe('apply.sh plan', () => {
         line.includes('/platform plan')
       )
     ).toMatch(
-      /-var release=v0\.4\.0 -var entra_enabled=true -var-file=.*\/params\.tfvars\.json$/
+      /plan -input=false -lock-timeout=15m -parallelism=20 -out=tfplan -var release=v0\.4\.0 -var entra_enabled=true -var-file=.*\/params\.tfvars\.json$/
     )
     expect(command('checks params')).toEqual([
       expect.stringMatching(
@@ -289,7 +289,7 @@ describe('apply.sh apply', () => {
     expect(result.stdout).toContain('Apply complete!')
     expect(command('terraform -chdir=')).toEqual([
       expect.stringMatching(
-        /\/platform apply -input=false -lock-timeout=15m -json tfplan$/
+        /\/platform apply -input=false -lock-timeout=15m -parallelism=20 -json tfplan$/
       )
     ])
     expect(readFileSync(join(workspace.dir, 'apply.jsonl'), 'utf8')).toContain(

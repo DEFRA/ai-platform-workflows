@@ -45,14 +45,18 @@ on:
 permissions: {}
 
 jobs:
-  # First, before anything is read or changed: who dispatched this (AC18).
-  access:
-    name: access
+  resolve:
+    name: resolve
     runs-on: ubuntu-26.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
+      deployments: read
+    outputs:
+      matrix: ${{ toJSON(fromJSON(steps.resolve.outputs.result).matrix) }}
     steps:
+      # First, before any token is minted or anything is read: who dispatched
+      # this (AC18). A step, not a job, to save a job start.
       - name: Check who dispatched this
         uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2
         with:
@@ -68,17 +72,6 @@ jobs:
           # reconcile-all keys on it (DD25).
           AIP_WORKFLOW_REF: ${{ github.workflow_ref }}
 
-  resolve:
-    name: resolve
-    needs: access
-    runs-on: ubuntu-26.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      deployments: read
-    outputs:
-      matrix: ${{ toJSON(fromJSON(steps.resolve.outputs.result).matrix) }}
-    steps:
       - id: reader
         uses: actions/create-github-app-token@v3
         with:
@@ -183,9 +176,9 @@ jobs:
       ARM_USE_OIDC: 'true'
       ARM_USE_CLI: 'false'
     steps:
-      # A re-run of failed jobs reuses a successful access job, so the actor
+      # A re-run of failed jobs reuses a successful resolve job, so the actor
       # of this attempt is checked again here, before any token or Terraform.
-      # AIP_ENVIRONMENT is the input, as in the access job (the job's own is
+      # AIP_ENVIRONMENT is the input, as in the resolve job (the job's own is
       # the matrix leg).
       - name: Check who ran this attempt
         uses: DEFRA/ai-platform-workflows/.github/actions/gitops@v2

@@ -33,6 +33,9 @@ params_file="$RUNNER_TEMP/params.tfvars.json"
 report_file="run-report-$environment.json"
 graph="https://graph.microsoft.com/v1.0"
 entra_objects='select(.type == "azuread_application" or .type == "azuread_service_principal")'
+# About 9 ARM reads a second at 2 s each, well inside ARM's 25 a second per
+# principal for 50 teams; azurerm and azuread serialise writes to one parent.
+parallelism=20
 
 checks() {
   node "${AIP_CHECKS:?}" "$@"
@@ -114,7 +117,7 @@ plan() {
       -var "environment=$environment" -var "cdp=$cdp"
       -var "platform_state=$(jq -c '. + {key: "platform.tfstate"}' <<< "$location")")
   fi
-  terraform -chdir="$root" plan -input=false -lock-timeout=15m -out=tfplan "${vars[@]}"
+  terraform -chdir="$root" plan -input=false -lock-timeout=15m -parallelism="$parallelism" -out=tfplan "${vars[@]}"
   terraform -chdir="$root" show -json tfplan > plan.json
   echo "entra_deletes=$(jq "[.resource_changes[]? | $entra_objects | select(.change.actions | index(\"delete\"))] | length" plan.json)" >> "$GITHUB_OUTPUT"
 
@@ -136,7 +139,7 @@ plan() {
 # the run log shows nothing until the apply is over; a long apply needs to be
 # watched as it runs.
 apply() {
-  terraform -chdir="$root" apply -input=false -lock-timeout=15m -json tfplan |
+  terraform -chdir="$root" apply -input=false -lock-timeout=15m -parallelism="$parallelism" -json tfplan |
     tee apply.jsonl | jq --unbuffered -r '."@message"'
 }
 

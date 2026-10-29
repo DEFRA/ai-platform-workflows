@@ -49,20 +49,29 @@ function calls(prefix) {
   return workspace.commands().filter((line) => line.startsWith(prefix))
 }
 
+function batches() {
+  return calls('entries ').map((line) => JSON.parse(line.slice(8)))
+}
+
 describe('publish-event.sh', () => {
-  test('signs in as the events identity, assumes the role and sends each event to its group', () => {
+  test('exchanges the job token for the events identity, assumes the role and sends the events in one batch', () => {
     workspace.write('events.json', events('op-00000001', 'op-00000002'))
 
     const result = publish()
 
     expect(result.status).toBe(0)
-    expect(calls('curl')).toEqual([
-      'curl https://token.example/oidc?api-version=2&audience=api://AzureADTokenExchange'
+    expect(calls('curl ')).toEqual([
+      'curl https://token.example/oidc?api-version=2&audience=api://AzureADTokenExchange',
+      `curl https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`
     ])
-    expect(calls('az')).toEqual([
-      `az login --service-principal --username ${CLIENT} --tenant ${TENANT} --federated-token fake-oidc --allow-no-subscriptions`,
-      `az account get-access-token --resource ${AUDIENCE} --query accessToken --output tsv`
+    expect(calls('form')).toEqual([
+      `form client_id=${CLIENT}`,
+      'form grant_type=client_credentials',
+      'form client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+      'form-file client_assertion fake-oidc',
+      `form scope=${AUDIENCE}/.default`
     ])
+    expect(calls('az')).toEqual([])
     expect(result.stdout).toContain('::add-mask::fake-oidc')
     expect(calls('aws sts')).toEqual([
       expect.stringContaining(
@@ -71,21 +80,86 @@ describe('publish-event.sh', () => {
     ])
     expect(calls('aws sqs')).toEqual([
       expect.stringContaining(
-        `aws sqs send-message --region eu-west-2 --queue-url ${QUEUE} --message-body {"eventId":"op-00000001:deployed:123:1","status":"deployed"} --message-group-id op-00000001 --message-deduplication-id op-00000001:deployed:123:1`
-      ),
-      expect.stringContaining('--message-group-id op-00000002')
+        `aws sqs send-message-batch --region eu-west-2 --queue-url ${QUEUE} --entries `
+      )
+    ])
+    expect(batches()).toEqual([
+      [
+        {
+          Id: 'e0',
+          MessageBody:
+            '{"eventId":"op-00000001:deployed:123:1","status":"deployed"}',
+          MessageGroupId: 'op-00000001',
+          MessageDeduplicationId: 'op-00000001:deployed:123:1'
+        },
+        {
+          Id: 'e1',
+          MessageBody:
+            '{"eventId":"op-00000002:deployed:123:1","status":"deployed"}',
+          MessageGroupId: 'op-00000002',
+          MessageDeduplicationId: 'op-00000002:deployed:123:1'
+        }
+      ]
     ])
     expect(result.stdout).toContain('Sent 2 of 2 events.')
   })
 
-  test('passes the token in a file, never on a command line, and masks it', () => {
+  test('sends at most 10 events a call', () => {
+    const ids = Array.from(
+      { length: 12 },
+      (_, index) => `op-${String(index + 1).padStart(8, '0')}`
+    )
+    workspace.write('events.json', events(...ids))
+
+    const result = publish()
+
+    expect(batches().map((batch) => batch.length)).toEqual([10, 2])
+    expect(batches()[1].map(({ Id }) => Id)).toEqual(['e10', 'e11'])
+    expect(result.stdout).toContain('Sent 12 of 12 events.')
+  })
+
+  test('leaves transient failures to curl and the AWS CLI, two retries each', () => {
+    workspace.write('events.json', events('op-00000001'))
+
+    publish()
+
+    expect(calls('curl-retry')).toEqual(['curl-retry 2', 'curl-retry 2'])
+    expect(calls('aws-retry')).toEqual([
+      'aws-retry standard 3',
+      'aws-retry standard 3'
+    ])
+  })
+
+  test('says on the run summary page how many events were sent', () => {
+    workspace.write('events.json', events('op-00000001', 'op-00000002'))
+
+    publish()
+
+    expect(workspace.summary()).toBe(
+      '- Status events: sent 2 of 2 to the events queue\n'
+    )
+  })
+
+  test('names on the run summary page every event that was not sent', () => {
+    workspace.write('events.json', events('op-00000001', 'op-00000002'))
+
+    publish({ AIP_TEST_REFUSE_GROUP: 'op-00000001' })
+
+    expect(workspace.summary()).toBe(
+      '- Status events: could not send op-00000001:deployed:123:1; the events stay in the run report\n' +
+        '- Status events: sent 1 of 2 to the events queue\n'
+    )
+  })
+
+  test('passes the tokens in files, never on a command line, and masks them', () => {
     workspace.write('events.json', events('op-00000001'))
 
     const result = publish()
 
-    expect(workspace.commands().join('\n')).not.toMatch(
-      /--web-identity-token fake-entra-token/
-    )
+    expect(
+      [...calls('curl '), ...calls('form '), ...calls('aws ')].join('\n')
+    ).not.toMatch(/fake-oidc|fake-entra-token/)
+    expect(calls('form-file')).toEqual(['form-file client_assertion fake-oidc'])
     expect(calls('token-file')).toEqual(['token-file fake-entra-token'])
     expect(result.stdout).toContain('::add-mask::fake-entra-token')
     expect(result.stdout).toContain('::add-mask::fake-secret')
@@ -141,12 +215,23 @@ describe('publish-event.sh', () => {
   })
 
   describe('when the queue or the identity is unreachable, the run still passes', () => {
-    test('warns and gives up when no token comes', () => {
+    test("warns with Entra's reason, and gives up, when the token exchange is refused", () => {
       workspace.write('events.json', events('op-00000001'))
 
-      const result = publish({ AIP_TEST_FAIL: 'get-access-token' })
+      const result = publish({ AIP_TEST_FAIL: 'token-exchange' })
 
       expect(result.status).toBe(0)
+      expect(result.stdout).toContain(
+        '::warning::publish-event: could not get a token for the events audience (AADSTS700213); the events stay in the run report'
+      )
+      expect(calls('aws')).toEqual([])
+    })
+
+    test('warns without a reason when Entra answers with no token and no JSON', () => {
+      workspace.write('events.json', events('op-00000001'))
+
+      const result = publish({ AIP_TEST_FAIL: 'token-exchange-html' })
+
       expect(result.stdout).toContain(
         '::warning::publish-event: could not get a token for the events audience; the events stay in the run report'
       )
@@ -237,21 +322,61 @@ describe('publish-event.sh', () => {
       }
     )
 
-    test('retries a send twice, then warns, and still tries the next event', () => {
+    test('sends again only the events SQS failed on its side, twice, then warns', () => {
       workspace.write('events.json', events('op-00000001', 'op-00000002'))
 
-      const result = publish({ AIP_TEST_FAIL: 'group-id op-00000001' })
+      const result = publish({ AIP_TEST_RETRY_GROUP: 'op-00000001' })
 
       expect(result.status).toBe(0)
       expect(
-        calls('aws sqs').filter((line) =>
-          line.includes('--message-group-id op-00000001')
+        batches().map((batch) =>
+          batch.map(({ MessageGroupId }) => MessageGroupId)
         )
-      ).toHaveLength(3)
+      ).toEqual([
+        ['op-00000001', 'op-00000002'],
+        ['op-00000001'],
+        ['op-00000001']
+      ])
       expect(result.stdout).toContain(
         '::warning::publish-event: could not send op-00000001:deployed:123:1'
       )
       expect(result.stdout).toContain('Sent 1 of 2 events.')
+    })
+
+    test("does not send again an event SQS refused as the sender's fault", () => {
+      workspace.write('events.json', events('op-00000001', 'op-00000002'))
+
+      const result = publish({ AIP_TEST_REFUSE_GROUP: 'op-00000001' })
+
+      expect(batches()).toHaveLength(1)
+      expect(result.stdout).toContain(
+        '::warning::publish-event: could not send op-00000001:deployed:123:1'
+      )
+      expect(result.stdout).toContain('Sent 1 of 2 events.')
+    })
+
+    test('warns for every event of a batch the AWS CLI could not send at all, without trying it again', () => {
+      workspace.write('events.json', events('op-00000001', 'op-00000002'))
+
+      const result = publish({ AIP_TEST_FAIL: 'send-message-batch' })
+
+      expect(result.status).toBe(0)
+      expect(calls('aws sqs')).toHaveLength(1)
+      expect(result.stdout).toContain(
+        'could not send op-00000001:deployed:123:1'
+      )
+      expect(result.stdout).toContain(
+        'could not send op-00000002:deployed:123:1'
+      )
+      expect(result.stdout).toContain('Sent 0 of 2 events.')
+    })
+
+    test('does not retry a refused role, which no retry can change', () => {
+      workspace.write('events.json', events('op-00000001'))
+
+      publish({ AIP_TEST_FAIL: 'assume-role-with-web-identity' })
+
+      expect(calls('aws sts')).toHaveLength(1)
     })
 
     test('gives up within its time budget when the queue hangs', () => {
@@ -313,7 +438,8 @@ describe('publish-event.sh', () => {
       expect(result.stdout).toContain(
         "::warning::publish-event: could not get the job's identity token"
       )
-      expect(calls('az')).toEqual([])
+      // A slow shell may use the 2 seconds before curl starts at all.
+      expect(calls('curl ').length).toBeLessThanOrEqual(1)
       expect(calls('aws')).toEqual([])
     })
 
@@ -324,19 +450,7 @@ describe('publish-event.sh', () => {
 
       expect(result.status).toBe(0)
       expect(result.stdout).toContain("could not get the job's identity token")
-      expect(calls('az')).toEqual([])
-    })
-
-    test('warns and gives up when the events identity will not sign in', () => {
-      workspace.write('events.json', events('op-00000001'))
-
-      const result = publish({ AIP_TEST_FAIL: 'login' })
-
-      expect(result.status).toBe(0)
-      expect(result.stdout).toContain(
-        'could not sign in as the events identity'
-      )
-      expect(calls('aws')).toEqual([])
+      expect(calls('curl ')).toHaveLength(1)
     })
 
     test('warns and gives up when the job identity token comes back empty', () => {
@@ -346,7 +460,7 @@ describe('publish-event.sh', () => {
 
       expect(result.status).toBe(0)
       expect(result.stdout).toContain("the job's identity token was empty")
-      expect(calls('az')).toEqual([])
+      expect(calls('curl ')).toHaveLength(1)
     })
   })
 })

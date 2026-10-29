@@ -2,19 +2,21 @@
 # The second half of the publish-event action: sends the events build-event
 # wrote (AIP_EVENT_FILE) to the events queue as the events identity, which has
 # `sqs:SendMessage` and nothing else:
-#   curl, az login                the job's OIDC token, signed in as
-#                                 AIP_EVENTS_CLIENT_ID (in a config folder of
-#                                 its own, leaving the job's sign-in alone)
-#   az account get-access-token   a token for AIP_EVENTS_AUDIENCE
+#   curl   the job's OIDC token, then Entra's token endpoint, which takes it as
+#          the client assertion of AIP_EVENTS_CLIENT_ID and returns a token
+#          for AIP_EVENTS_AUDIENCE (no az, so no sign-in state to keep apart
+#          from the job's)
 #   aws sts assume-role-with-web-identity   to AIP_EVENTS_ROLE_ARN
-#   aws sqs send-message          to AIP_EVENTS_QUEUE_URL, one per event, in
-#                                 the event's FIFO group, deduplicated by its ID
+#   aws sqs send-message-batch   to AIP_EVENTS_QUEUE_URL, up to 10 events a
+#          call, each in its FIFO group and deduplicated by its ID
 #
 # Bounded, so a deploy never waits on it or fails on it: everything, the
-# sign-in included, shares one deadline (AIP_PUBLISH_SECONDS, 10) and each call
-# is retried at most twice (AIP_PUBLISH_RETRIES). An event that cannot be sent
-# is a warning, never a failure; build-event has already kept every event in
-# the run report.
+# sign-in included, shares one deadline (AIP_PUBLISH_SECONDS, 10). Only
+# transient failures are retried, at most AIP_PUBLISH_RETRIES (2) times: curl
+# and the AWS CLI retry timeouts, throttling and server errors themselves, and
+# an event SQS failed on its side is sent again; a refusal is final. An event
+# that cannot be sent is a warning, never a failure; build-event has already
+# kept every event in the run report.
 #
 # In: AIP_EVENT_FILE (a JSON array of {groupId, deduplicationId, body}),
 #     AIP_EVENTS_QUEUE_URL, AIP_EVENTS_ROLE_ARN, AIP_EVENTS_AUDIENCE,
@@ -35,9 +37,19 @@ if [[ "${AIP_EVENT_DEADLINE:-}" =~ ^[0-9]+$ ]]; then
   fi
 fi
 deadline=$((SECONDS + budget))
+export AWS_RETRY_MODE=standard AWS_MAX_ATTEMPTS=$((retries + 1))
+
+# The run's summary page, so an event that was not sent is seen without
+# reading the log.
+summary() {
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"
+  fi
+}
 
 warn() {
   echo "::warning::publish-event: $1; the events stay in the run report"
+  summary "- Status events: $1; the events stay in the run report"
 }
 
 remaining() {
@@ -52,16 +64,10 @@ bounded() {
   timeout "$left" "$@"
 }
 
-# The call, again up to $retries times while the deadline allows.
-retry() {
-  local attempt=0
-  until bounded "$@"; do
-    attempt=$((attempt + 1))
-    if ((attempt > retries)) || (($(remaining) <= 1)); then
-      return 1
-    fi
-    sleep 1
-  done
+# curl, retrying only what curl counts as transient (timeouts, 408, 429, 5xx).
+fetch() {
+  bounded curl --silent --show-error --max-time "$(remaining)" \
+    --retry "$retries" --retry-max-time "$(remaining)" "$@"
 }
 
 mask() {
@@ -105,17 +111,13 @@ publish() {
 
   local work="${RUNNER_TEMP:?}/aip-events"
   local token_file="$work/token" oidc_file="$work/oidc.json"
-  local token credentials oidc seen
+  local assertion_file="$work/assertion" grant_file="$work/grant.json"
+  local token credentials oidc seen reason
   rm -rf "$work"
   (umask 077 && mkdir -p "$work")
   trap 'rm -rf "$work"' RETURN
 
-  # Sign in as the events identity here, not in a step of its own, so the
-  # sign-in shares the deadline; in a folder of its own, so the job's own
-  # sign-in (the deploy identity's) is left as it was.
-  export AZURE_CONFIG_DIR="$work/az"
-  retry curl --silent --show-error --fail --max-time "$(remaining)" \
-    --header "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+  fetch --fail --header "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
     --output "$oidc_file" \
     "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" || {
     warn "could not get the job's identity token"
@@ -127,23 +129,27 @@ publish() {
     return 0
   fi
   mask "$oidc"
+  printf '%s' "$oidc" > "$assertion_file"
 
-  retry az login --service-principal --username "$AIP_EVENTS_CLIENT_ID" \
-    --tenant "$AZURE_TENANT_ID" --federated-token "$oidc" \
-    --allow-no-subscriptions > /dev/null || {
-    warn "could not sign in as the events identity"
+  # No --fail: a refusal's body names the reason, as an AADSTS code.
+  fetch --output "$grant_file" \
+    --data-urlencode "client_id=$AIP_EVENTS_CLIENT_ID" \
+    --data-urlencode grant_type=client_credentials \
+    --data-urlencode client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer \
+    --data-urlencode "client_assertion@$assertion_file" \
+    --data-urlencode "scope=$AIP_EVENTS_AUDIENCE/.default" \
+    "https://login.microsoftonline.com/$AZURE_TENANT_ID/oauth2/v2.0/token" || true
+  token="$(jq -r '.access_token // empty' "$grant_file" 2> /dev/null || true)"
+  if [[ -z "$token" ]]; then
+    reason="$(jq -r 'if .error_codes then "AADSTS\(.error_codes[0])" else .error // empty end' \
+      "$grant_file" 2> /dev/null | tr -cd 'A-Za-z0-9_-' || true)"
+    warn "could not get a token for the events audience${reason:+ ($reason)}"
     return 0
-  }
-
-  token="$(retry az account get-access-token --resource "$AIP_EVENTS_AUDIENCE" \
-    --query accessToken --output tsv)" || {
-    warn "could not get a token for the events audience"
-    return 0
-  }
+  fi
   mask "$token"
   printf '%s' "$token" > "$token_file"
 
-  credentials="$(retry aws sts assume-role-with-web-identity --region "$region" \
+  credentials="$(bounded aws sts assume-role-with-web-identity --region "$region" \
     --role-arn "$AIP_EVENTS_ROLE_ARN" \
     --role-session-name "aip-events-${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-1}" \
     --web-identity-token "file://$token_file" --duration-seconds 900 \
@@ -163,24 +169,40 @@ publish() {
   mask "$secret"
   mask "$session"
 
-  local count index body group dedup sent=0
+  local count batch pending response outcome attempt dedup sent=0
   count="$(jq length "$file")"
-  for ((index = 0; index < count; index++)); do
-    body="$(jq -c ".[$index].body" "$file")"
-    group="$(jq -r ".[$index].groupId" "$file")"
-    dedup="$(jq -r ".[$index].deduplicationId" "$file")"
-
-    if AWS_ACCESS_KEY_ID="$key" AWS_SECRET_ACCESS_KEY="$secret" AWS_SESSION_TOKEN="$session" \
-      retry aws sqs send-message --region "$region" --queue-url "$AIP_EVENTS_QUEUE_URL" \
-      --message-body "$body" --message-group-id "$group" \
-      --message-deduplication-id "$dedup" --output text > /dev/null; then
-      sent=$((sent + 1))
-    else
+  # Batches of 10, the most SQS takes in one call; an Id need only be unique
+  # within its batch.
+  while IFS= read -r batch; do
+    pending="$batch"
+    for ((attempt = 0; attempt <= retries; attempt++)); do
+      response="$(AWS_ACCESS_KEY_ID="$key" AWS_SECRET_ACCESS_KEY="$secret" AWS_SESSION_TOKEN="$session" \
+        bounded aws sqs send-message-batch --region "$region" \
+        --queue-url "$AIP_EVENTS_QUEUE_URL" --entries "$pending" --output json)" || break
+      # A sender fault is final; anything else not sent is tried again.
+      outcome="$(jq -c --argjson r "$response" '
+        ($r.Successful // [] | map(.Id)) as $sent
+        | ($r.Failed // [] | map(select(.SenderFault == true) | .Id)) as $refused
+        | {sent: map(select(.Id as $id | any($sent[]; . == $id))) | length,
+           refused: map(select(.Id as $id | any($refused[]; . == $id))),
+           retry: map(select(.Id as $id | any($sent[], $refused[]; . == $id) | not))}' \
+        <<< "$pending")" || break
+      sent=$((sent + $(jq .sent <<< "$outcome")))
+      while IFS= read -r dedup; do
+        warn "could not send $dedup"
+      done < <(jq -r '.refused[].MessageDeduplicationId' <<< "$outcome")
+      pending="$(jq -c .retry <<< "$outcome")"
+      [[ "$pending" == '[]' ]] && break
+    done
+    while IFS= read -r dedup; do
       warn "could not send $dedup"
-    fi
-  done
+    done < <(jq -r '.[].MessageDeduplicationId' <<< "$pending")
+  done < <(jq -c '[to_entries[] | {Id: "e\(.key)", MessageBody: (.value.body | tojson),
+    MessageGroupId: .value.groupId, MessageDeduplicationId: .value.deduplicationId}]
+    | range(0; length; 10) as $i | .[$i:$i + 10]' "$file")
 
   echo "Sent $sent of $count events."
+  summary "- Status events: sent $sent of $count to the events queue"
 }
 
 # Never fails the run, whatever went wrong.

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.2](https://github.com/DEFRA/ai-platform-workflows/compare/v2.0.1...v2.0.2) (2026-10-29)
+
+
+### Bug Fixes
+
+* say which claims the refused events token had ([#22](https://github.com/DEFRA/ai-platform-workflows/issues/22)) ([279c7b0](https://github.com/DEFRA/ai-platform-workflows/commit/279c7b0e90e4cb690c59e969699d6402c60b71db))
+
 ## [2.0.1](https://github.com/DEFRA/ai-platform-workflows/compare/v2.0.0...v2.0.1) (2026-10-29)
 
 

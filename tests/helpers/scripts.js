@@ -82,9 +82,10 @@ exit 0
 
 // Records each call to the AWS CLI, its retry settings, and the credentials a
 // send used; a call matching AIP_TEST_FAIL fails, and every call waits
-// AIP_TEST_SLEEP seconds. A batch logs its --entries and fails, as SQS does
-// per entry, the events of group AIP_TEST_RETRY_GROUP on SQS's side and those
-// of AIP_TEST_REFUSE_GROUP as the sender's fault.
+// AIP_TEST_SLEEP seconds. A batch logs its --entries (read from file:// as
+// the AWS CLI does) and fails, as SQS does per entry, the events of group
+// AIP_TEST_RETRY_GROUP on SQS's side and those of AIP_TEST_REFUSE_GROUP as
+// the sender's fault, with AIP_TEST_REFUSE_MESSAGE.
 const FAKE_AWS = `#!/usr/bin/env bash
 printf 'aws %s\\n' "$*" >> "$AIP_TEST_LOG"
 printf 'aws-retry %s %s\\n' "\${AWS_RETRY_MODE:-}" "\${AWS_MAX_ATTEMPTS:-}" >> "$AIP_TEST_LOG"
@@ -101,11 +102,15 @@ if [[ "$*" == *send-message-batch* ]]; then
   for ((i = 1; i <= $#; i++)); do
     [[ "\${!i}" == --entries ]] && { j=$((i + 1)); entries="\${!j}"; }
   done
+  [[ "$entries" == file://* ]] && entries="$(cat "\${entries#file://}")"
   printf 'entries %s\\n' "$entries" >> "$AIP_TEST_LOG"
-  jq -c --arg retry "\${AIP_TEST_RETRY_GROUP:-}" --arg refuse "\${AIP_TEST_REFUSE_GROUP:-}" '{
+  jq -c --arg retry "\${AIP_TEST_RETRY_GROUP:-}" --arg refuse "\${AIP_TEST_REFUSE_GROUP:-}" \\
+    --arg message "\${AIP_TEST_REFUSE_MESSAGE:-Invalid binary character}" '{
     Successful: [.[] | select(.MessageGroupId != $retry and .MessageGroupId != $refuse) | {Id}],
-    Failed: [.[] | select(.MessageGroupId == $retry or .MessageGroupId == $refuse)
-      | {Id, SenderFault: (.MessageGroupId == $refuse), Code: "InternalError"}]}' <<< "$entries"
+    Failed: ([.[] | select(.MessageGroupId == $retry)
+      | {Id, SenderFault: false, Code: "ServiceUnavailable"}]
+      + [.[] | select(.MessageGroupId == $refuse)
+      | {Id, SenderFault: true, Code: "InvalidParameterValue", Message: $message}])}' <<< "$entries"
 fi
 exit 0
 `

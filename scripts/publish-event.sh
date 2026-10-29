@@ -112,6 +112,7 @@ publish() {
   local work="${RUNNER_TEMP:?}/aip-events"
   local token_file="$work/token" oidc_file="$work/oidc.json"
   local assertion_file="$work/assertion" grant_file="$work/grant.json"
+  local batch_file="$work/batch.json"
   local token credentials oidc seen reason
   rm -rf "$work"
   (umask 077 && mkdir -p "$work")
@@ -169,34 +170,56 @@ publish() {
   mask "$secret"
   mask "$session"
 
-  local count batch pending response outcome attempt dedup sent=0
+  local count batch pending response attempt line reasons n next why_next sent=0
   count="$(jq length "$file")"
   # Batches of 10, the most SQS takes in one call; an Id need only be unique
   # within its batch.
   while IFS= read -r batch; do
     pending="$batch"
+    reasons='{}'
     for ((attempt = 0; attempt <= retries; attempt++)); do
+      # A file, as ten large events can pass the limit on one argument.
+      printf '%s' "$pending" > "$batch_file"
       response="$(AWS_ACCESS_KEY_ID="$key" AWS_SECRET_ACCESS_KEY="$secret" AWS_SESSION_TOKEN="$session" \
         bounded aws sqs send-message-batch --region "$region" \
-        --queue-url "$AIP_EVENTS_QUEUE_URL" --entries "$pending" --output json)" || break
-      # A sender fault is final; anything else not sent is tried again.
-      outcome="$(jq -c --argjson r "$response" '
+        --queue-url "$AIP_EVENTS_QUEUE_URL" --entries "file://$batch_file" --output json)" || {
+        reasons='{}'
+        break
+      }
+      # A sender fault is final; anything else not sent is tried again. SQS's
+      # code and message say why, on one line and briefly. One jq prints the
+      # count sent, what to retry, why, then each refusal.
+      {
+        if ! { read -r n && read -r next && read -r why_next; }; then
+          break
+        fi
+        sent=$((sent + n))
+        while IFS= read -r line; do
+          warn "could not send $line"
+        done
+      } < <(jq -r --argjson r "$response" '
         ($r.Successful // [] | map(.Id)) as $sent
-        | ($r.Failed // [] | map(select(.SenderFault == true) | .Id)) as $refused
-        | {sent: map(select(.Id as $id | any($sent[]; . == $id))) | length,
-           refused: map(select(.Id as $id | any($refused[]; . == $id))),
-           retry: map(select(.Id as $id | any($sent[], $refused[]; . == $id) | not))}' \
-        <<< "$pending")" || break
-      sent=$((sent + $(jq .sent <<< "$outcome")))
-      while IFS= read -r dedup; do
-        warn "could not send $dedup"
-      done < <(jq -r '.refused[].MessageDeduplicationId' <<< "$outcome")
-      pending="$(jq -c .retry <<< "$outcome")"
+        | ($r.Failed // []) as $failed
+        | def why: .Id as $id | ($failed | map(select(.Id == $id)) | first) as $f
+            | if $f then [$f.Code, $f.Message] | map(select(.)) | join(": ")
+                | gsub("[[:cntrl:]]"; " ") | .[0:200]
+              else "no result" end;
+          def refused: .Id as $id | any($failed[]; .Id == $id and .SenderFault == true);
+          def sent: .Id as $id | any($sent[]; . == $id);
+          (map(select(sent)) | length),
+          (map(select(sent or refused | not)) | tojson),
+          (map(select(sent or refused | not) | {key: .MessageDeduplicationId, value: why})
+            | from_entries | tojson),
+          (.[] | select(refused) | "\(.MessageDeduplicationId) (\(why))")' <<< "$pending")
+      pending="$next"
+      reasons="$why_next"
       [[ "$pending" == '[]' ]] && break
     done
-    while IFS= read -r dedup; do
-      warn "could not send $dedup"
-    done < <(jq -r '.[].MessageDeduplicationId' <<< "$pending")
+    while IFS= read -r line; do
+      warn "could not send $line"
+    done < <(jq -r --argjson why "$reasons" \
+      '.[] | "\(.MessageDeduplicationId) (\($why[.MessageDeduplicationId] // "the batch call failed"))"' \
+      <<< "$pending")
   done < <(jq -c '[to_entries[] | {Id: "e\(.key)", MessageBody: (.value.body | tojson),
     MessageGroupId: .value.groupId, MessageDeduplicationId: .value.deduplicationId}]
     | range(0; length; 10) as $i | .[$i:$i + 10]' "$file")

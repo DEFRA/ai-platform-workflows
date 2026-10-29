@@ -80,9 +80,10 @@ describe('publish-event.sh', () => {
     ])
     expect(calls('aws sqs')).toEqual([
       expect.stringContaining(
-        `aws sqs send-message-batch --region eu-west-2 --queue-url ${QUEUE} --entries `
+        `aws sqs send-message-batch --region eu-west-2 --queue-url ${QUEUE} --entries file://`
       )
     ])
+    expect(calls('aws sqs')[0]).not.toContain('MessageBody')
     expect(batches()).toEqual([
       [
         {
@@ -146,7 +147,7 @@ describe('publish-event.sh', () => {
     publish({ AIP_TEST_REFUSE_GROUP: 'op-00000001' })
 
     expect(workspace.summary()).toBe(
-      '- Status events: could not send op-00000001:deployed:123:1; the events stay in the run report\n' +
+      '- Status events: could not send op-00000001:deployed:123:1 (InvalidParameterValue: Invalid binary character); the events stay in the run report\n' +
         '- Status events: sent 1 of 2 to the events queue\n'
     )
   })
@@ -338,7 +339,7 @@ describe('publish-event.sh', () => {
         ['op-00000001']
       ])
       expect(result.stdout).toContain(
-        '::warning::publish-event: could not send op-00000001:deployed:123:1'
+        '::warning::publish-event: could not send op-00000001:deployed:123:1 (ServiceUnavailable); the events stay in the run report'
       )
       expect(result.stdout).toContain('Sent 1 of 2 events.')
     })
@@ -350,9 +351,23 @@ describe('publish-event.sh', () => {
 
       expect(batches()).toHaveLength(1)
       expect(result.stdout).toContain(
-        '::warning::publish-event: could not send op-00000001:deployed:123:1'
+        '::warning::publish-event: could not send op-00000001:deployed:123:1 (InvalidParameterValue: Invalid binary character); the events stay in the run report'
       )
       expect(result.stdout).toContain('Sent 1 of 2 events.')
+    })
+
+    test("keeps SQS's reason to one line, so it cannot write a workflow command", () => {
+      workspace.write('events.json', events('op-00000001'))
+
+      const result = publish({
+        AIP_TEST_REFUSE_GROUP: 'op-00000001',
+        AIP_TEST_REFUSE_MESSAGE: 'bad\n::error::injected'
+      })
+
+      expect(result.stdout).toContain(
+        'could not send op-00000001:deployed:123:1 (InvalidParameterValue: bad ::error::injected)'
+      )
+      expect(result.stdout.split('\n')).not.toContain('::error::injected')
     })
 
     test('warns for every event of a batch the AWS CLI could not send at all, without trying it again', () => {
@@ -363,10 +378,10 @@ describe('publish-event.sh', () => {
       expect(result.status).toBe(0)
       expect(calls('aws sqs')).toHaveLength(1)
       expect(result.stdout).toContain(
-        'could not send op-00000001:deployed:123:1'
+        'could not send op-00000001:deployed:123:1 (the batch call failed)'
       )
       expect(result.stdout).toContain(
-        'could not send op-00000002:deployed:123:1'
+        'could not send op-00000002:deployed:123:1 (the batch call failed)'
       )
       expect(result.stdout).toContain('Sent 0 of 2 events.')
     })

@@ -217,14 +217,25 @@ describe('publish-event.sh', () => {
       expect(shown.join('\n')).not.toContain('with-the-rest')
     })
 
-    test('reports no claims when the refused token is not a JWT', () => {
-      workspace.write('events.json', events('op-00000001'))
+    test.each([
+      ['an opaque string', undefined],
+      ['base64 JSON with no dots', 'e30'],
+      ['two parts only', 'e30.e30'],
+      ['four parts', 'e30.e30.e30.e30']
+    ])(
+      'reports no claims when the refused token is not a JWT (%s)',
+      (_what, token) => {
+        workspace.write('events.json', events('op-00000001'))
 
-      const result = publish({ AIP_TEST_FAIL: 'assume-role-with-web-identity' })
+        const result = publish({
+          AIP_TEST_FAIL: 'assume-role-with-web-identity',
+          ...(token && { AIP_TEST_TOKEN: token })
+        })
 
-      expect(result.stdout).toContain('could not assume the events role')
-      expect(result.stdout).not.toContain('the token the role refused had')
-    })
+        expect(result.stdout).toContain('could not assume the events role')
+        expect(result.stdout).not.toContain('the token the role refused had')
+      }
+    )
 
     test('retries a send twice, then warns, and still tries the next event', () => {
       workspace.write('events.json', events('op-00000001', 'op-00000002'))

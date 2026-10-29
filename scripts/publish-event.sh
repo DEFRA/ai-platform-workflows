@@ -74,6 +74,7 @@ mask() {
 # claim can write a workflow command. Empty when it is not a JWT.
 claims() {
   local payload
+  [[ "$1" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$ ]] || return 0
   payload="$(cut -d. -f2 <<< "$1" | tr '_-' '/+')"
   while ((${#payload} % 4 != 0)); do
     payload+="="

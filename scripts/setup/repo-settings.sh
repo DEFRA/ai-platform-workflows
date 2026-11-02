@@ -25,8 +25,8 @@
 # mitigations 1 and 6): every body is checked before it is sent, and the
 # script stops if one lists anyone but the named Apps. --dry-run reads but
 # prints every write. --verify is --dry-run that also reads the live settings
-# and exits 1 on any difference from what this script would set, so a daily run
-# detects drift (settings-drift.yml).
+# and exits 1 on any difference from what this script would set; an admin runs
+# it by hand to detect drift.
 set -euo pipefail
 
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"

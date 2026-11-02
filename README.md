@@ -25,7 +25,6 @@ the merge loop and `prune-op-branches.yml` are gone, and callers move to `@v2`.
 | `release.yml`                | infra (`kind: infra`), this     | push to `main`                          | release-please; infra submits `autoPin` pins, each naming its base; this repository moves the major tag                                                                                                                                        |
 | `release-merge.yml`          | infra, this                     | `workflow_run` of the PR checks         | The App merges the release-please PR once every check `main` requires has passed                                                                                                                                                               |
 | `workflow-checks.yml`        | this repository                 | `pull_request`                          | `actionlint` and shellcheck, unit and script tests, lint and audit                                                                                                                                                                             |
-| `settings-drift.yml`         | this repository                 | daily `schedule`, `workflow_dispatch`   | `repo-settings.sh --verify` and the audit log of the machine repositories: fails on any difference or change                                                                                                                                   |
 
 A push applies every environment whose folder changed since its last successful apply, so a run superseded
 by a newer one (R1) loses nothing; a dispatch applies the environment it names; `all` applies every environment.
@@ -116,7 +115,7 @@ The apply refuses to run when the state repository's rulesets are not as the des
 and `aip-machine-protect` must both exist and be active, the first bypassed by the submit Apps alone and still
 requiring a pull request with a code-owner review and the check, the second bypassed by no one (plan section 15,
 mitigation 2). GitHub returns the bypass lists only to a caller with write access to the ruleset, so the apply
-checks them only when its read-only token can see them; the scheduled settings-drift run holds them to the design.
+checks them only when its read-only token can see them; an admin checks them by hand with `repo-settings.sh --verify`.
 
 | Part                                                        | What                                                                                                                                                                                                                    |
 | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -178,20 +177,20 @@ scripts/setup/repo-settings.sh --app-id {release App} --submit-app-ids {App},{in
 
 No administrator, person or team is ever a bypass actor, and the script stops before any write if a body would say
 otherwise (plan section 15, mitigations 1 and 6). That is the limit of what it can do: a repository admin can still
-delete a ruleset by hand, so `aice-platform-admins` stays small and every such change is detected, not prevented (see
-Settings drift). A pull request that changes `.github/` in a state repository needs a code-owner review by
+delete a ruleset by hand, so `aice-platform-admins` stays small and such a change is found only by the manual
+check (see Settings checks). A pull request that changes `.github/` in a state repository needs a code-owner review by
 `aice-platform-admins` (the callers' `CODEOWNERS`) and the check, which passes it once it is approved.
 
 A disabled workflow is treated as an engineer's pause: a dispatch to it fails with `workflow-disabled` and
 nothing re-enables it. The script lists any disabled workflow it finds.
 
-### Settings drift
+### Settings checks
 
-[`settings-drift.yml`](.github/workflows/settings-drift.yml) runs `repo-settings.sh --verify` daily, then
-[`audit-log.sh`](scripts/setup/audit-log.sh), which lists every ruleset, branch protection, Environment, Actions
-settings, collaborator, team access, deploy key, webhook and default branch change in the last 26 hours, and fails the run on any
-difference or change. It needs a read-only `AIP_SETTINGS_AUDIT_TOKEN` secret and the variables `AIP_RELEASE_APP_ID`,
-`AIP_SUBMIT_APP_IDS` and `AIP_ENVIRONMENTS`. An admin's own change, an `AIP_PAUSED` update included, shows too.
+Nothing checks the settings on a schedule. An admin runs `repo-settings.sh --verify` and
+[`audit-log.sh`](scripts/setup/audit-log.sh) by hand: the second lists every ruleset, branch protection, Environment, Actions
+settings, collaborator, team access, deploy key, webhook and default branch change in the last 26 hours. Each exits 1
+on any difference or change. `audit-log.sh` needs a token with organisation audit-log read. An admin's own change, an
+`AIP_PAUSED` update included, shows too.
 
 ## Releases
 

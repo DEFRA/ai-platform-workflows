@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# The audit-log half of the daily settings drift check (plan section 15,
+# The audit-log half of the manual settings check (plan section 15,
 # mitigation 4): lists what changed in the state repositories' rulesets,
 # branch protection, Environments, Actions settings, collaborators and team
-# access, deploy keys, webhooks and the default branch, and exits 1 if there is anything, so the
-# workflow fails and GitHub tells its watchers. An admin's own change shows
+# access, deploy keys, webhooks and the default branch, and exits 1 if there
+# is anything. An admin runs it by hand. An admin's own change shows
 # too (an AIP_PAUSED change is an environment.update_actions_variable); the
 # point is that none goes unseen.
 #

@@ -37,8 +37,8 @@ async function submitAppIds(github) {
 }
 
 // GitHub leaves bypass_actors out of a ruleset for a caller without write
-// access to it, as the App's read-only token is. The scheduled settings-drift
-// run holds the bypass lists to the design with an admin-read token instead.
+// access to it, as the App's read-only token is. An admin checks the bypass
+// lists by hand with scripts/setup/repo-settings.sh --verify instead.
 function hasBypassList(ruleset) {
   return Array.isArray(ruleset.bypass_actors)
 }
@@ -144,7 +144,8 @@ function checkProtect(ruleset) {
  *
  * The bypass lists are checked only where the token can see them: GitHub
  * returns `bypass_actors` to callers with write access to the ruleset alone,
- * so with the App's read-only token that part is left to settings-drift.
+ * so with the App's read-only token that part is left to an admin's manual
+ * `repo-settings.sh --verify`.
  *
  * @param {object} github - Client with Administration: read; the App's.
  * @param {{owner: string, repo: string}} repository - The state repository.

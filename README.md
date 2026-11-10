@@ -146,7 +146,7 @@ dispatches an apply, as an exempt App).
 | Repository variables | `GITOPS_APP_CLIENT_ID` and `AZURE_TENANT_ID`, shared by every environment                                                                                                                                                                     | –        |
 | Environment `{env}`  | `AZURE_CLIENT_ID`, `AZURE_SUBSCRIPTION_ID` of `id-aip-deploy-{env}`; `AIP_EVENTS_QUEUE_URL`, `AIP_EVENTS_ROLE_ARN`, `AIP_EVENTS_CLIENT_ID`, `AIP_EVENTS_AUDIENCE`; `AIP_PAUSED` (`true` or `false`, created `false`); tenants and deployments | `main`   |
 
-Only the core environments (`infradev`, `dev`, `test`, `preprod`, `prod`) are GitHub Environments, one each, with no
+Only the core environments (one per `registry.json` entry; `infradev` today) are GitHub Environments, one each, with no
 prefix or suffix Environment beside them. The apply jobs use `{env}`, so Azure issues a token only to a job on `main`
 in the matching Environment. `submit`, `pause.yml` and the apply's pause gate use `{env}` too, with
 `deployment: false`, so they read its variables and sign in as the events identity (`id-aip-events-{env}`, no Azure

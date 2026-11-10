@@ -134,6 +134,7 @@ for ((i = 0; i < \${#args[@]}; i++)); do
   esac
 done
 [[ "$method" != GET ]] && exit 0
+if [[ -n "\${AIP_TEST_GH_ERROR:-}" && "$path" == *"$AIP_TEST_GH_ERROR"* ]]; then echo 'gh: Bad Gateway (HTTP 502)' >&2; exit 1; fi
 file="$AIP_TEST_GH/\${path//\\//_}.json"
 if [[ -f "$file" ]]; then body="$(cat "$file")"
 else
@@ -141,7 +142,7 @@ else
     */rulesets) body='[]' ;;
     */deployment-branch-policies) body='{"total_count":0,"branch_policies":[]}' ;;
     */actions/workflows) body='{"total_count":0,"workflows":[]}' ;;
-    *) exit 1 ;;
+    *) echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
   esac
 fi
 if [[ -n "$filter" ]]; then jq -r "$filter" <<< "$body"; else echo "$body"; fi

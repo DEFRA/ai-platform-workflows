@@ -131,11 +131,11 @@ describe('submit-desired-state.yml', () => {
     )
   })
 
-  test('runs in the {env}-events Environment with no pull-requests permission', () => {
+  test('runs in the {env} Environment without a Deployment, with no pull-requests permission', () => {
     const submit = job(file, 'submit')
 
     expect(submit).toMatch(
-      /^ {4}environment:\n {6}name: \$\{\{ inputs\.environment \}\}-events$/m
+      /^ {4}environment:\n {6}name: \$\{\{ inputs\.environment \}\}\n {6}deployment: false$/m
     )
     expect(submit).toMatch(
       /^ {4}permissions:\n {6}contents: read\n {6}id-token: write\n {4}env:/m
@@ -210,19 +210,19 @@ describe('apply-state.yml', () => {
     expect(read(`.github/workflows/${file}`)).not.toMatch(/^ {2}access:$/m)
   })
 
-  test('reads each environment pause in its {env}-events Environment before the apply starts', () => {
+  test('reads each environment pause in its {env} Environment, without a Deployment, before the apply starts', () => {
     const gate = job(file, 'gate')
 
     expect(gate).toMatch(
-      /^ {4}environment:\n {6}name: \$\{\{ matrix\.environment \}\}-events$/m
+      /^ {4}environment:\n {6}name: \$\{\{ matrix\.environment \}\}\n {6}deployment: false$/m
     )
     expect(gate).toContain('command: pause-gate')
     expect(job(file, 'apply')).toMatch(/^ {4}needs: \[resolve, gate\]$/m)
   })
 
-  test('the apply job runs in the real Environment, never the events one', () => {
+  test('the apply job runs in the Environment with a Deployment, the baseline of the next apply', () => {
     expect(job(file, 'apply')).toMatch(
-      /^ {4}environment:\n {6}name: \$\{\{ matrix\.environment \}\}$/m
+      /^ {4}environment:\n {6}name: \$\{\{ matrix\.environment \}\}\n {4}[a-z]/m
     )
   })
 

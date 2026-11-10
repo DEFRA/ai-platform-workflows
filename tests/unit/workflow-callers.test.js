@@ -59,14 +59,25 @@ describe('reusable workflows', () => {
   )
 
   test.each(reusable)(
-    '%s uses only a real environment as a GitHub Environment',
+    '%s names only the core environment as a GitHub Environment, with no prefix or suffix',
     (file) => {
       const names = [
         ...read(file).matchAll(/^ {4}environment:\n {6}name: (.+)$/gm)
       ]
 
       expect(names.map(([, name]) => name)).toSatisfy((all) =>
-        all.every((name) => name.startsWith('${{'))
+        all.every((name) =>
+          /^\$\{\{ (inputs|matrix)\.environment \}\}$/.test(name)
+        )
+      )
+    }
+  )
+
+  test.each(['submit-desired-state.yml', 'pause.yml', 'apply-state.yml'])(
+    '%s reads variables in the core Environment without creating a Deployment for the apply to mistake for its own',
+    (file) => {
+      expect(read(file)).toMatch(
+        /^ {4}environment:\n {6}name: \$\{\{ (inputs|matrix)\.environment \}\}\n {6}deployment: false$/m
       )
     }
   )

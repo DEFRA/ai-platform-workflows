@@ -2,7 +2,7 @@ name: Pause
 
 # Called by each state repository's pause.yml (workflow_dispatch, input
 # environment) after an admin sets AIP_PAUSED (`true` or `false`) on the
-# `{env}-events` Environment. It reads AIP_PAUSED, publishes `paused` or
+# `{env}` Environment (no Deployment is created). It reads AIP_PAUSED, publishes `paused` or
 # `resumed` with this run's ID so the Portal API can corroborate it, and
 # writes nothing (design B `#workflows`, `docs/async-operations-plan.md`
 # section 5, Pause). Admins only, and both the actor and whoever re-ran it.
@@ -43,7 +43,8 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     environment:
-      name: ${{ inputs.environment }}-events
+      name: ${{ inputs.environment }}
+      deployment: false
     permissions:
       contents: read
       id-token: write

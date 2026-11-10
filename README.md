@@ -19,7 +19,7 @@ the merge loop and `prune-op-branches.yml` are gone, and callers move to `@v2`.
 | `apply-state.yml`            | deployments (`state: platform`) | push to `main`, `workflow_dispatch`     | Admin check; ruleset check; platform apply with the safeguards, a run report and events, then dispatches the tenants apply                                                                                                                     |
 | `apply-state.yml`            | tenants (`state: tenants`)      | push to `main`, `workflow_dispatch`     | Tenants apply once the platform apply covers the pin (R5), with the safeguards, a run report and events; purges the Entra registrations it removed                                                                                             |
 | `apply-state.yml`            | tenants, deployments            | nightly `schedule`, `workflow_dispatch` | `reconcile-all.yml`: the same with `all: true`, which applies every environment from `main`                                                                                                                                                    |
-| `pause.yml`                  | tenants, deployments            | `workflow_dispatch` (`pause.yml`)       | Admins only: reads `AIP_PAUSED` in `{env}-events` and publishes `paused` or `resumed`; writes nothing                                                                                                                                          |
+| `pause.yml`                  | tenants, deployments            | `workflow_dispatch` (`pause.yml`)       | Admins only: reads `AIP_PAUSED` in `{env}` and publishes `paused` or `resumed`; writes nothing                                                                                                                                                 |
 | `validate-environments.yml`  | environments                    | `pull_request`, push to `main`          | Required check `validate-environments / validate`; dispatches the platform apply after a merge                                                                                                                                                 |
 | `infra-checks.yml`           | infra                           | `pull_request`                          | Required checks `infra-checks / validate`, `lint`, `schemas`, `catalogue`, `security` (checkov)                                                                                                                                                |
 | `release.yml`                | infra (`kind: infra`), this     | push to `main`                          | release-please; infra submits `autoPin` pins, each naming its base; this repository moves the major tag                                                                                                                                        |
@@ -93,10 +93,10 @@ It applies to `workflow_dispatch` only; a push or a schedule is not checked.
 
 ## Pause
 
-An admin sets `AIP_PAUSED` (`true` or `false`) on the `{env}-events` Environment of both state repositories and runs
+An admin sets `AIP_PAUSED` (`true` or `false`) on the `{env}` Environment of both state repositories and runs
 `pause.yml`. The workflows read the variable themselves, so a lost `paused` event cannot let an automatic write through:
 while it is `true`, `submit` refuses an exempt App's write (`paused`, retryable) and an apply an exempt App dispatched
-reads it in a first job on `{env}-events` and, after its preflight, applies nothing and sends `deploy-failed` with the
+reads it in a first job on `{env}` (with `deployment: false`) and, after its preflight, applies nothing and sends `deploy-failed` with the
 retryable code `paused`, and records its run report with the outcome `paused` (the backend corroborates the event from
 it and the reconciler reads it). Pushes and an admin's hand runs go through.
 
@@ -140,18 +140,30 @@ otherwise, and each workflow that mints a token declares `GITOPS_APP_PRIVATE_KEY
 `@v1` stays tagged for callers that have not moved (`ai-platform-environments` calls it unchanged: it only
 dispatches an apply, as an exempt App).
 
-| Where                      | Variables and secrets                                                                                                                                                                      | Branches |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- |
-| Secret                     | `GITOPS_APP_PRIVATE_KEY`, the App key, one per repository or an organisation secret                                                                                                        | –        |
-| Repository variables       | `GITOPS_APP_CLIENT_ID` and `AZURE_TENANT_ID`, shared by every environment                                                                                                                  | –        |
-| Environment `{env}`        | `AZURE_CLIENT_ID`, `AZURE_SUBSCRIPTION_ID` of `id-aip-deploy-{env}`; `AIP_EVENTS_QUEUE_URL`, `AIP_EVENTS_ROLE_ARN`, `AIP_EVENTS_CLIENT_ID`, `AIP_EVENTS_AUDIENCE`; tenants and deployments | `main`   |
-| Environment `{env}-events` | The same four `AIP_EVENTS_*`, and `AIP_PAUSED` (`true` or `false`, created `false`); tenants and deployments                                                                               | `main`   |
+| Where                | Variables and secrets                                                                                                                                                                                                                         | Branches |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| Secret               | `GITOPS_APP_PRIVATE_KEY`, the App key, one per repository or an organisation secret                                                                                                                                                           | –        |
+| Repository variables | `GITOPS_APP_CLIENT_ID` and `AZURE_TENANT_ID`, shared by every environment                                                                                                                                                                     | –        |
+| Environment `{env}`  | `AZURE_CLIENT_ID`, `AZURE_SUBSCRIPTION_ID` of `id-aip-deploy-{env}`; `AIP_EVENTS_QUEUE_URL`, `AIP_EVENTS_ROLE_ARN`, `AIP_EVENTS_CLIENT_ID`, `AIP_EVENTS_AUDIENCE`; `AIP_PAUSED` (`true` or `false`, created `false`); tenants and deployments | `main`   |
 
-Only real environments (`infradev`, `dev`, `test`, `preprod`, `prod`) and their `{env}-events` are GitHub
-Environments. The apply jobs use `{env}`, so Azure issues a token only to a job on `main` in the matching
-Environment; `submit`, `pause.yml` and the apply's pause gate use `{env}-events`, which has no Azure role. The
-events identity (`id-aip-events-{env}`) is federated to both. An Environment variable wins over a repository
-variable of the same name. In Phase 1 the one App is `ai-platform-orchestrator`.
+Only the core environments (one per `registry.json` entry; `infradev` today) are GitHub Environments, one each, with no
+prefix or suffix Environment beside them. The apply jobs use `{env}`, so Azure issues a token only to a job on `main`
+in the matching Environment. `submit`, `pause.yml` and the apply's pause gate use `{env}` too, with
+`deployment: false`, so they read its variables and sign in as the events identity (`id-aip-events-{env}`, no Azure
+role) without creating a Deployment, which the apply reads as its baseline. An Environment variable wins over a
+repository variable of the same name. In Phase 1 the one App is `ai-platform-orchestrator`.
+
+### Adding an environment
+
+The same steps every time, in this order; nothing is added beside the core name.
+
+1. `ai-platform-environments`: an entry in `registry.json` and `environments/{env}/platform.tfvars.json`.
+2. `ai-platform-infra`: bootstrap `{env}` (state, `id-aip-deploy-{env}`, `id-aip-events-{env}`, whose credentials trust the `{env}` Environment of the two state repositories).
+3. `repo-settings.sh --environments {existing},{env}` (an admin): creates the Environment in tenants and deployments with `AIP_PAUSED=false`; then set the variables in the table above.
+4. `ai-platform-tenants` and `-deployments`: `environments/{env}/` folders.
+5. `repo-settings.sh --verify` exits 0.
+
+A name is lower case letters and digits, 2 to 16 characters (`environmentName` in `src/gitops.js`), so a hyphenated name such as `infradev-events` is refused before any job can make GitHub create it.
 
 Runners: each registry entry's `runner` decides where its apply jobs run, as standard labels
 (`["ubuntu-26.04"]`, Phase 1) or a larger-runner group with Azure private networking (`{"group": "aip-{env}"}`,
@@ -169,11 +181,11 @@ scripts/setup/repo-settings.sh --app-id {release App} --submit-app-ids {App},{in
   --environments infradev [--admins-team aice-platform-admins] [--dry-run | --verify]
 ```
 
-| Repositories                          | `main`                                                                                                                                                                                                                                                               | Also                                                                                                                                                                                                                                                                   |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ai-platform-tenants`, `-deployments` | `aip-machine-main`: a pull request with one approval and a code-owner review, and the check `validate-desired-state / validate`; squash only; bypassed by the submit Apps alone, which commit directly. `aip-machine-protect`: no force push, no deletion; no bypass | Environments `{env}` and `{env}-events`: `main` only, administrators cannot bypass, every other deployment branch or tag policy removed; `AIP_PAUSED=false` created in `{env}-events`; `aice-platform-admins` repository admin (to set `AIP_PAUSED`) on these two only |
-| `ai-platform-infra`, `-workflows`     | Pull request with one approval; the required checks of the PR workflow; squash only; the App bypasses to merge a release PR                                                                                                                                          | Auto-merge allowed; tag ruleset `v*` and branch ruleset `release-please--*` writable by the App only, so a release PR holds only the App's commits                                                                                                                     |
-| `ai-platform-environments`            | Pull request with one approval; required check `validate-environments / validate`; squash only                                                                                                                                                                       | –                                                                                                                                                                                                                                                                      |
+| Repositories                          | `main`                                                                                                                                                                                                                                                               | Also                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ai-platform-tenants`, `-deployments` | `aip-machine-main`: a pull request with one approval and a code-owner review, and the check `validate-desired-state / validate`; squash only; bypassed by the submit Apps alone, which commit directly. `aip-machine-protect`: no force push, no deletion; no bypass | One Environment `{env}`: `main` only, administrators cannot bypass, every other deployment branch or tag policy removed; `AIP_PAUSED=false` created in it (a pause on a retired `{env}-events` is carried over, then that Environment is removed); `aice-platform-admins` repository admin (to set `AIP_PAUSED`) on these two only |
+| `ai-platform-infra`, `-workflows`     | Pull request with one approval; the required checks of the PR workflow; squash only; the App bypasses to merge a release PR                                                                                                                                          | Auto-merge allowed; tag ruleset `v*` and branch ruleset `release-please--*` writable by the App only, so a release PR holds only the App's commits                                                                                                                                                                                 |
+| `ai-platform-environments`            | Pull request with one approval; required check `validate-environments / validate`; squash only                                                                                                                                                                       | –                                                                                                                                                                                                                                                                                                                                  |
 
 No administrator, person or team is ever a bypass actor, and the script stops before any write if a body would say
 otherwise (plan section 15, mitigations 1 and 6). That is the limit of what it can do: a repository admin can still

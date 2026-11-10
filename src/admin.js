@@ -133,8 +133,8 @@ async function adminCheck(input) {
     )
   }
 
-  // A job that names `{environment}-events` makes GitHub create the
-  // Environment if it is missing, so the name is checked before any job does.
+  // A job that names an Environment makes GitHub create it if it is missing,
+  // so the name is checked before any job does.
   if (env.AIP_ENVIRONMENT) {
     environmentName(env.AIP_ENVIRONMENT)
   }

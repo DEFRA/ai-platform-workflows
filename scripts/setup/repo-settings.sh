@@ -14,9 +14,9 @@
 # aip-machine-main (a pull request with one approval and a code-owner review,
 # and the validate check; bypassed by the submit Apps alone, --submit-app-ids,
 # so they commit to main directly) and aip-machine-protect (force-push and
-# deletion protection, no bypass), one Environment `{env}` and one
-# `{env}-events` per real environment (main only, administrators cannot
-# bypass, AIP_PAUSED=false when `{env}-events` is created), the team
+# deletion protection, no bypass), one Environment `{env}` per real environment
+# (main only, administrators cannot bypass, AIP_PAUSED=false when it is
+# created; a retired `{env}-events` is removed, its pause carried over), the team
 # --admins-team as repository admin (to set AIP_PAUSED), legacy Environments
 # removed, disabled workflows reported. Other variables and secrets are not
 # touched.
@@ -250,9 +250,7 @@ ensure_environment() {
 
   echo "$repo: Environment $name allows main only, and administrators cannot bypass it"
 
-  if [[ "$name" == *-events ]]; then
-    ensure_paused_variable "$repo" "$name"
-  fi
+  ensure_paused_variable "$repo" "$name"
 
   if [[ "$verify" == true ]]; then
     verify_environment "$repo" "$name"
@@ -260,17 +258,46 @@ ensure_environment() {
 }
 
 # AIP_PAUSED starts false, only when the Environment has none: a pause an admin
-# set is never reset by running this again.
+# set is never reset by running this again. A pause set on a retired
+# `{env}-events` Environment is carried over, so retiring it never lifts a pause.
 ensure_paused_variable() {
-  local repo="$1" name="$2"
+  local repo="$1" name="$2" value=false retired
 
   if read_api "repos/$owner/$repo/environments/$name/variables/AIP_PAUSED" --silent 2> /dev/null; then
     return 0
   fi
 
+  retired="$(retired_pause "$repo" "$name")" || {
+    echo "::error::$repo: cannot read AIP_PAUSED on $name-events; nothing was created or retired"
+    return 1
+  }
+  if [[ -n "$retired" ]]; then
+    value="$retired"
+  fi
+
   write_api -X POST "repos/$owner/$repo/environments/$name/variables" \
-    -f name=AIP_PAUSED -f value=false
-  echo "$repo: Environment $name has AIP_PAUSED=false"
+    -f name=AIP_PAUSED -f "value=$value"
+  echo "$repo: Environment $name has AIP_PAUSED=$value"
+}
+
+# The pause on a retired `{env}-events`: empty only when GitHub says it is
+# not there (404). Any other failure stops the run before anything is written
+# or retired, so a pause is never lost to a transient error.
+retired_pause() {
+  local repo="$1" name="$2" out
+
+  if out="$(read_api "repos/$owner/$repo/environments/$name-events/variables/AIP_PAUSED" --jq '.value' 2>&1)"; then
+    if [[ "$out" != true && "$out" != false ]]; then
+      echo "$out" >&2
+      return 1
+    fi
+    echo "$out"
+  elif [[ "$out" == *"HTTP 404"* ]]; then
+    echo ''
+  else
+    echo "$out" >&2
+    return 1
+  fi
 }
 
 verify_environment() {
@@ -300,8 +327,7 @@ verify_environment() {
     differs "$repo" "Environment $name does not allow the branch main alone"
   fi
 
-  if [[ "$name" == *-events ]] &&
-    ! read_api "repos/$owner/$repo/environments/$name/variables/AIP_PAUSED" --silent 2> /dev/null; then
+  if ! read_api "repos/$owner/$repo/environments/$name/variables/AIP_PAUSED" --silent 2> /dev/null; then
     differs "$repo" "Environment $name has no AIP_PAUSED"
   fi
 }
@@ -324,11 +350,15 @@ ensure_admins_team() {
 }
 
 remove_environment() {
-  local repo="$1" name="$2"
+  local repo="$1" name="$2" reason="${3:-legacy}"
 
   if read_api "repos/$owner/$repo/environments/$name" --silent 2> /dev/null; then
+    if [[ "$verify" == true && "$reason" == retired ]]; then
+      differs "$repo" "retired Environment $name still exists"
+    fi
+
     write_api -X DELETE "repos/$owner/$repo/environments/$name"
-    echo "$repo: legacy Environment $name removed"
+    echo "$repo: $reason Environment $name removed"
   fi
 }
 
@@ -366,9 +396,12 @@ configure_machine() {
   # pull-request rule; nobody else does, administrators included.
   upsert_ruleset "$repo" "$main_body" "$apps_json"
 
+  # One Environment per real environment and nothing with a suffix: `{env}-events`
+  # is retired (its pause is carried into `{env}` first), so a job that must
+  # not record a Deployment uses `deployment: false` on `{env}` instead.
   for env in ${environments//,/ }; do
     ensure_environment "$repo" "$env"
-    ensure_environment "$repo" "$env-events"
+    remove_environment "$repo" "$env-events" retired
   done
 
   ensure_admins_team "$repo"

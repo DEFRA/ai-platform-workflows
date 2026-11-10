@@ -99,7 +99,7 @@ describe('repo-settings.sh', () => {
     expect(writes().filter((line) => line.includes('rulesets'))).toEqual([])
   })
 
-  test('sets squash-only merging, both machine rulesets, both Environments per environment and the admins team in a machine repository', () => {
+  test('sets squash-only merging, both machine rulesets, one Environment per environment and the admins team in a machine repository', () => {
     const result = runMachine(['--environments', 'infradev,dev'])
 
     expect(result.status).toBe(0)
@@ -112,12 +112,7 @@ describe('repo-settings.sh', () => {
     expect(
       lines.filter((line) => line.endsWith('/rulesets --input -'))
     ).toHaveLength(2)
-    for (const environment of [
-      'infradev',
-      'infradev-events',
-      'dev',
-      'dev-events'
-    ]) {
+    for (const environment of ['infradev', 'dev']) {
       expect(lines).toContainEqual(
         `gh api -X PUT repos/DEFRA/ai-platform-tenants/environments/${environment} --input -`
       )
@@ -381,13 +376,13 @@ describe('the ruleset bodies the script sends', () => {
     }
   })
 
-  test('administrators cannot bypass the protection of any Environment, the events ones included', () => {
+  test('administrators cannot bypass the protection of any Environment', () => {
     expect(runMachine(['--environments', 'infradev,dev']).status).toBe(0)
 
     const environmentBodies = bodies().filter(
       (body) => body.deployment_branch_policy
     )
-    expect(environmentBodies).toHaveLength(4)
+    expect(environmentBodies).toHaveLength(2)
     for (const body of environmentBodies) {
       expect(body).toEqual({
         can_admins_bypass: false,
@@ -472,14 +467,29 @@ describe('AIP_PAUSED', () => {
   const variable = (environment) =>
     `gh api -X POST repos/DEFRA/ai-platform-tenants/environments/${environment}/variables -f name=AIP_PAUSED -f value=false`
 
-  test('starts false in each {env}-events Environment, and in no other', () => {
+  test('starts false in each {env} Environment, and nowhere else', () => {
     expect(runMachine(['--environments', 'infradev,dev']).status).toBe(0)
 
     const lines = writes().filter((line) => line.includes('/variables'))
-    expect(lines).toEqual([variable('infradev-events'), variable('dev-events')])
+    expect(lines).toEqual([variable('infradev'), variable('dev')])
   })
 
   test('is never reset when an admin already set it', () => {
+    workspace.write(
+      'gh-fixtures/repos_DEFRA_ai-platform-tenants_environments_infradev_variables_AIP_PAUSED.json',
+      '{"name":"AIP_PAUSED","value":"true"}'
+    )
+
+    expect(runMachine().status).toBe(0)
+
+    expect(writes().filter((line) => line.includes('/variables'))).toEqual([])
+  })
+
+  test('carries a pause set on a retired {env}-events Environment into {env}, then removes it', () => {
+    workspace.write(
+      'gh-fixtures/repos_DEFRA_ai-platform-tenants_environments_infradev-events.json',
+      '{"name":"infradev-events"}'
+    )
     workspace.write(
       'gh-fixtures/repos_DEFRA_ai-platform-tenants_environments_infradev-events_variables_AIP_PAUSED.json',
       '{"name":"AIP_PAUSED","value":"true"}'
@@ -487,7 +497,45 @@ describe('AIP_PAUSED', () => {
 
     expect(runMachine().status).toBe(0)
 
+    const lines = writes()
+    expect(lines.filter((line) => line.includes('/variables'))).toEqual([
+      'gh api -X POST repos/DEFRA/ai-platform-tenants/environments/infradev/variables -f name=AIP_PAUSED -f value=true'
+    ])
+    expect(lines).toContainEqual(
+      'gh api -X DELETE repos/DEFRA/ai-platform-tenants/environments/infradev-events'
+    )
+    expect(
+      lines.indexOf(lines.find((l) => l.includes('/variables')))
+    ).toBeLessThan(lines.indexOf(lines.find((l) => l.includes('DELETE'))))
+  })
+
+  test('stops before creating the variable or retiring {env}-events when the retired pause cannot be read', () => {
+    workspace.write(
+      'gh-fixtures/repos_DEFRA_ai-platform-tenants_environments_infradev-events.json',
+      '{"name":"infradev-events"}'
+    )
+
+    const result = workspace.run(
+      SCRIPT,
+      [
+        '--app-id',
+        APP,
+        '--environments',
+        'infradev',
+        '--submit-app-ids',
+        SUBMIT_APPS,
+        '--repos',
+        TENANTS
+      ],
+      { AIP_TEST_GH_ERROR: 'infradev-events/variables/AIP_PAUSED' }
+    )
+
+    expect(result.status).not.toBe(0)
+    expect(result.stdout).toContain(
+      '::error::ai-platform-tenants: cannot read AIP_PAUSED on infradev-events; nothing was created or retired'
+    )
     expect(writes().filter((line) => line.includes('/variables'))).toEqual([])
+    expect(writes()).not.toContainEqual(expect.stringContaining('DELETE'))
   })
 })
 
@@ -579,15 +627,13 @@ describe('--verify', () => {
     put(`${prefix}_rulesets_2.json`, JSON.stringify(protect))
 
     for (const environment of environments) {
-      for (const name of [environment, `${environment}-events`]) {
-        put(`${prefix}_environments_${name}.json`, environmentBody())
-        put(
-          `${prefix}_environments_${name}_deployment-branch-policies.json`,
-          '{"branch_policies":[{"id":1,"name":"main","type":"branch"}]}'
-        )
-      }
+      put(`${prefix}_environments_${environment}.json`, environmentBody())
       put(
-        `${prefix}_environments_${environment}-events_variables_AIP_PAUSED.json`,
+        `${prefix}_environments_${environment}_deployment-branch-policies.json`,
+        '{"branch_policies":[{"id":1,"name":"main","type":"branch"}]}'
+      )
+      put(
+        `${prefix}_environments_${environment}_variables_AIP_PAUSED.json`,
         '{"name":"AIP_PAUSED","value":"false"}'
       )
     }
@@ -806,9 +852,9 @@ describe('--verify', () => {
     ],
     [
       'an Environment lets administrators bypass',
-      'environments_infradev-events',
+      'environments_infradev',
       environmentBody({ can_admins_bypass: true }),
-      'Environment infradev-events lets administrators bypass its protection'
+      'Environment infradev lets administrators bypass its protection'
     ],
     [
       'an Environment keeps its main policy but is unrestricted',
@@ -818,14 +864,20 @@ describe('--verify', () => {
     ],
     [
       'an Environment keeps its main policy but is limited to protected branches',
-      'environments_infradev-events',
+      'environments_infradev',
       environmentBody({
         deployment_branch_policy: {
           protected_branches: true,
           custom_branch_policies: false
         }
       }),
-      'Environment infradev-events does not enforce its custom branch policies'
+      'Environment infradev does not enforce its custom branch policies'
+    ],
+    [
+      'a retired {env}-events Environment still exists',
+      'environments_infradev-events',
+      '{"name":"infradev-events"}',
+      'retired Environment infradev-events still exists'
     ],
     [
       'an Environment allows another branch',
@@ -846,11 +898,8 @@ describe('--verify', () => {
     expect(result.stdout).toContain(`::error::ai-platform-tenants: ${message}`)
   })
 
-  test('reports an Environment that is missing, and a pause that was never created', () => {
-    liveMatches([
-      '_environments_infradev',
-      '_environments_infradev-events_variables_AIP_PAUSED'
-    ])
+  test('reports an Environment that is missing', () => {
+    liveMatches(['_environments_infradev'])
 
     const result = verify()
 
@@ -858,8 +907,16 @@ describe('--verify', () => {
     expect(result.stdout).toContain(
       '::error::ai-platform-tenants: Environment infradev is missing'
     )
+  })
+
+  test('reports a pause that was never created', () => {
+    liveMatches(['_environments_infradev_variables_AIP_PAUSED'])
+
+    const result = verify()
+
+    expect(result.status).toBe(1)
     expect(result.stdout).toContain(
-      '::error::ai-platform-tenants: Environment infradev-events has no AIP_PAUSED'
+      '::error::ai-platform-tenants: Environment infradev has no AIP_PAUSED'
     )
   })
 

@@ -267,14 +267,37 @@ ensure_paused_variable() {
     return 0
   fi
 
-  retired="$(read_api "repos/$owner/$repo/environments/$name-events/variables/AIP_PAUSED" --jq '.value' 2> /dev/null || true)"
-  if [[ "$retired" == true || "$retired" == false ]]; then
+  retired="$(retired_pause "$repo" "$name")" || {
+    echo "::error::$repo: cannot read AIP_PAUSED on $name-events; nothing was created or retired"
+    return 1
+  }
+  if [[ -n "$retired" ]]; then
     value="$retired"
   fi
 
   write_api -X POST "repos/$owner/$repo/environments/$name/variables" \
     -f name=AIP_PAUSED -f "value=$value"
   echo "$repo: Environment $name has AIP_PAUSED=$value"
+}
+
+# The pause on a retired `{env}-events`: empty only when GitHub says it is
+# not there (404). Any other failure stops the run before anything is written
+# or retired, so a pause is never lost to a transient error.
+retired_pause() {
+  local repo="$1" name="$2" out
+
+  if out="$(read_api "repos/$owner/$repo/environments/$name-events/variables/AIP_PAUSED" --jq '.value' 2>&1)"; then
+    if [[ "$out" != true && "$out" != false ]]; then
+      echo "$out" >&2
+      return 1
+    fi
+    echo "$out"
+  elif [[ "$out" == *"HTTP 404"* ]]; then
+    echo ''
+  else
+    echo "$out" >&2
+    return 1
+  fi
 }
 
 verify_environment() {

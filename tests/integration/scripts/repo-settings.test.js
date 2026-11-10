@@ -508,6 +508,35 @@ describe('AIP_PAUSED', () => {
       lines.indexOf(lines.find((l) => l.includes('/variables')))
     ).toBeLessThan(lines.indexOf(lines.find((l) => l.includes('DELETE'))))
   })
+
+  test('stops before creating the variable or retiring {env}-events when the retired pause cannot be read', () => {
+    workspace.write(
+      'gh-fixtures/repos_DEFRA_ai-platform-tenants_environments_infradev-events.json',
+      '{"name":"infradev-events"}'
+    )
+
+    const result = workspace.run(
+      SCRIPT,
+      [
+        '--app-id',
+        APP,
+        '--environments',
+        'infradev',
+        '--submit-app-ids',
+        SUBMIT_APPS,
+        '--repos',
+        TENANTS
+      ],
+      { AIP_TEST_GH_ERROR: 'infradev-events/variables/AIP_PAUSED' }
+    )
+
+    expect(result.status).not.toBe(0)
+    expect(result.stdout).toContain(
+      '::error::ai-platform-tenants: cannot read AIP_PAUSED on infradev-events; nothing was created or retired'
+    )
+    expect(writes().filter((line) => line.includes('/variables'))).toEqual([])
+    expect(writes()).not.toContainEqual(expect.stringContaining('DELETE'))
+  })
 })
 
 describe('the assertion on bypass actors', () => {

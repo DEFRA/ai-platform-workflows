@@ -94,9 +94,11 @@ jobs:
     needs: access
     runs-on: ubuntu-26.04
     timeout-minutes: 15
-    # The Environment that holds AIP_PAUSED and the events identity's trust.
+    # The Environment holds AIP_PAUSED and the events identity's trust; no
+    # Deployment, because the apply reads its own as the baseline.
     environment:
-      name: ${{ inputs.environment }}-events
+      name: ${{ inputs.environment }}
+      deployment: false
     # One submit per file at a time; every queued submit waits its turn
     # (queue: max) rather than replacing the one already waiting.
     concurrency:

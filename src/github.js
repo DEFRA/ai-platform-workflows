@@ -131,12 +131,6 @@ async function lastApplied(octokit, { owner, repo, environment }) {
   })
 
   for (const deployment of deployments) {
-    // A job on `{env}-events` records Deployments of its own (the pause gate
-    // and the events identity); only the Environment's own count here.
-    if (deployment.environment && deployment.environment !== environment) {
-      continue
-    }
-
     const { data: statuses } = await octokit.rest.repos.listDeploymentStatuses({
       owner,
       repo,

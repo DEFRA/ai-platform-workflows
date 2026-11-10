@@ -19,8 +19,8 @@ function heldBack({ paused, eventName, actor }) {
 }
 
 /**
- * pause-gate: the apply's first job, which runs in the `{env}-events`
- * Environment because only that one holds AIP_PAUSED. Records whether this
+ * pause-gate: the apply's first job, which runs in the `{env}` Environment
+ * without a Deployment, where AIP_PAUSED is set. Records whether this
  * run is held back in AIP_HELD_FILE, for the apply job to read.
  *
  * Inputs: AIP_PAUSED, AIP_ACTOR, AIP_HELD_FILE.

@@ -172,7 +172,7 @@ describe('lastApplied', () => {
     ).resolves.toBeNull()
   })
 
-  test('asks for the Environment by its exact name, so infradev-events is not infradev', async () => {
+  test('asks for the Environment by its exact name', async () => {
     const asked = nock(API)
       .get(`${TENANTS}/deployments`)
       .query({ environment: 'infradev', per_page: '30' })
@@ -181,18 +181,6 @@ describe('lastApplied', () => {
     await lastApplied(createOctokit(), { ...REPO, environment: 'infradev' })
 
     expect(asked.isDone()).toBe(true)
-  })
-
-  test('ignores a Deployment of the {env}-events Environment, whatever comes back', async () => {
-    deployments([
-      { id: 5, sha: 'events-run', environment: 'infradev-events' },
-      deployment(4, 'c4')
-    ])
-    status(4, 'success')
-
-    await expect(
-      lastApplied(createOctokit(), { ...REPO, environment: 'infradev' })
-    ).resolves.toBe('c4')
   })
 })
 

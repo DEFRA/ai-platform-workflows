@@ -99,9 +99,10 @@ jobs:
           path: config
           retention-days: 7
 
-  # Each environment's pause is read in its `{env}-events` Environment, the
-  # only one that holds AIP_PAUSED, so each leg records whether an exempt
-  # App's dispatch is held back; the apply job reads it (section 5, Pause).
+  # Each environment's pause is read in its `{env}` Environment, with no
+  # Deployment (the apply reads its own as the baseline), so each leg records
+  # whether an exempt App's dispatch is held back; the apply job reads it
+  # (section 5, Pause).
   gate:
     name: pause ${{ matrix.environment }}
     needs: resolve
@@ -109,7 +110,8 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     environment:
-      name: ${{ matrix.environment }}-events
+      name: ${{ matrix.environment }}
+      deployment: false
     permissions:
       contents: read
     strategy:

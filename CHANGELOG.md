@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/DEFRA/ai-platform-workflows/compare/v2.0.4...v2.1.0) (2026-11-10)
+
+
+### Features
+
+* run submit, pause and the pause gate in {env} with deployment: false ([#31](https://github.com/DEFRA/ai-platform-workflows/issues/31)) ([76d3887](https://github.com/DEFRA/ai-platform-workflows/commit/76d3887910027e452ba1b86d668bc42f80167dde))
+
 ## [2.0.4](https://github.com/DEFRA/ai-platform-workflows/compare/v2.0.3...v2.0.4) (2026-10-29)
 
 

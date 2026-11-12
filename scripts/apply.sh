@@ -195,6 +195,9 @@ build_report() {
   if [[ -f outputs.json ]]; then
     args+=(--outputs outputs.json)
   fi
+  # The registry, so the report can say which federations wait for a team
+  # registration (its notices).
+  args+=(--environments "$config")
   checks run-report "${args[@]}"
 
   if [[ "$events" != '[]' ]]; then
@@ -218,7 +221,10 @@ report() {
     "",
     "Failing teams: \(.failingTeams | join(", "))",
     "",
-    "Entra objects in this state: \(.entraObjects // "not planned")"' "$report_file" >> "$GITHUB_STEP_SUMMARY"
+    "Entra objects in this state: \(.entraObjects // "not planned")",
+    (if (.notices // []) | length > 0
+      then "", "Notices: \([.notices[].message] | join("; "))"
+      else empty end)' "$report_file" >> "$GITHUB_STEP_SUMMARY"
 }
 
 case "${1:-}" in

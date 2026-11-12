@@ -160,7 +160,8 @@ if (args[0] === 'run-report') {
     changes: { total: { create: 2, update: 1, delete: 0, replace: 0 } },
     operations: [{ operationIds: ['op-00000001'] }],
     failingTeams: [],
-    entraObjects: 4
+    entraObjects: 4,
+    ...(process.env.AIP_TEST_NOTICES ? { notices: JSON.parse(process.env.AIP_TEST_NOTICES) } : {})
   }))
 }
 process.exit(process.env.AIP_TEST_FAIL === args[0] ? 1 : 0)

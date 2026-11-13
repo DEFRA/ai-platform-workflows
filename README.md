@@ -109,7 +109,9 @@ backend (HashiCorp's `tfc-workflows-github` drives HCP Terraform); `setup-terraf
 later `run` steps to call, so the apply job runs it from `apply.sh`, which adds only what is this
 platform's own: re-validation (R4), the CCoE-named backend, plan-guard (R2), break-glass, the Entra purge
 and the run report. Terraform signs in to Azure by OIDC through `ARM_*` variables; the purge signs in
-`az` with `azure/login`.
+`az` with `azure/login`. The run report's `notices` (from `aip-checks run-report --environments`, which
+`apply.sh` passes the registry checkout) are printed on the job summary as a `Notices:` line, for example a
+federation held back because the environment creates no team registration; an older `aip-checks` writes none.
 
 The apply refuses to run when the state repository's rulesets are not as the design has them: `aip-machine-main`
 and `aip-machine-protect` must both exist and be active, the first bypassed by the submit Apps alone and still

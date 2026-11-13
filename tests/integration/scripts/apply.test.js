@@ -368,13 +368,56 @@ describe('apply.sh report', () => {
         '--outcome success --release v0.4.0 --repository DEFRA/ai-platform-deployments ' +
           '--run-id 123 --run-attempt 1 ' +
           '--run-url https://github.com/DEFRA/ai-platform-deployments/actions/runs/123 ' +
-          '--out run-report-infradev.json --base b1 --plan plan.json --apply-log apply.jsonl --outputs outputs.json'
+          '--out run-report-infradev.json --base b1 --plan plan.json --apply-log apply.jsonl --outputs outputs.json ' +
+          '--environments'
       )
     ])
+    expect(command('checks run-report')[0]).toMatch(
+      /--environments .*\/config$/
+    )
     expect(workspace.summary()).toContain(
       '### success\n\nChanges: 2 to add, 1 to change, 0 to destroy\n\nOperations: op-00000001'
     )
     expect(workspace.summary()).toContain('Entra objects in this state: 4')
+  })
+
+  test('prints no Notices line where the run report has none', () => {
+    run('report', { AIP_OUTCOME: 'success' })
+    expect(workspace.summary()).not.toContain('Notices')
+
+    run('report', { AIP_OUTCOME: 'success', AIP_TEST_NOTICES: '[]' })
+    expect(workspace.summary()).not.toContain('Notices')
+  })
+
+  test('prints a Notices line from the run report, after the rest', () => {
+    const notices = [
+      {
+        code: 'registration-not-enabled',
+        file: 'environments/infradev/beta.json',
+        team: 'beta',
+        message:
+          'registration not enabled in infradev: 1 federation of beta is accepted but not applied'
+      },
+      {
+        code: 'registration-not-enabled',
+        file: 'environments/infradev/gamma.json',
+        team: 'gamma',
+        message:
+          'registration not enabled in infradev: 2 federations of gamma are accepted but not applied'
+      }
+    ]
+
+    const result = run('report', {
+      AIP_OUTCOME: 'success',
+      AIP_TEST_NOTICES: JSON.stringify(notices)
+    })
+
+    expect(result.status).toBe(0)
+    expect(workspace.summary()).toContain(
+      'Entra objects in this state: 4\n\nNotices: ' +
+        'registration not enabled in infradev: 1 federation of beta is accepted but not applied; ' +
+        'registration not enabled in infradev: 2 federations of gamma are accepted but not applied'
+    )
   })
 
   test('reports a run that never initialised Terraform', () => {
@@ -383,7 +426,7 @@ describe('apply.sh report', () => {
     expect(result.status).toBe(0)
     expect(command('terraform')).toEqual([])
     expect(command('checks run-report')[0]).toMatch(
-      /--out run-report-infradev\.json$/
+      /--out run-report-infradev\.json --environments .*\/config$/
     )
   })
 

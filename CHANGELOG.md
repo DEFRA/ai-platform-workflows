@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/DEFRA/ai-platform-workflows/compare/v2.1.0...v2.2.0) (2026-11-13)
+
+
+### Features
+
+* print run report notices in the apply summary ([#33](https://github.com/DEFRA/ai-platform-workflows/issues/33)) ([9eb2488](https://github.com/DEFRA/ai-platform-workflows/commit/9eb2488163d8f1e1f65a8dd3a682d0bb754b39d6))
+
 ## [2.1.0](https://github.com/DEFRA/ai-platform-workflows/compare/v2.0.4...v2.1.0) (2026-11-10)
 
 

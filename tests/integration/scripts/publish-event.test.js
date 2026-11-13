@@ -202,22 +202,76 @@ describe('publish-event.sh', () => {
   })
 
   test.each([
-    ['AIP_EVENTS_QUEUE_URL'],
-    ['AIP_EVENTS_ROLE_ARN'],
-    ['AIP_EVENTS_AUDIENCE'],
-    ['AIP_EVENTS_CLIENT_ID'],
-    ['AZURE_TENANT_ID'],
-    ['ACTIONS_ID_TOKEN_REQUEST_URL'],
-    ['ACTIONS_ID_TOKEN_REQUEST_TOKEN'],
-    ['AIP_EVENT_DEADLINE']
-  ])('sends nothing, and says so, where %s is not set', (name) => {
+    ['AIP_EVENTS_QUEUE_URL', 'AIP_EVENTS_QUEUE_URL'],
+    ['AIP_EVENTS_ROLE_ARN', 'AIP_EVENTS_ROLE_ARN'],
+    ['AIP_EVENTS_AUDIENCE', 'AIP_EVENTS_AUDIENCE'],
+    ['AIP_EVENTS_CLIENT_ID', 'AIP_EVENTS_CLIENT_ID'],
+    ['AZURE_TENANT_ID', 'AZURE_TENANT_ID'],
+    ['ACTIONS_ID_TOKEN_REQUEST_URL', "the job's id-token: write permission"],
+    ['ACTIONS_ID_TOKEN_REQUEST_TOKEN', "the job's id-token: write permission"],
+    ['AIP_EVENT_DEADLINE', "build-event's AIP_EVENT_DEADLINE"]
+  ])(
+    'sends nothing, and warns on the summary page naming it, where only %s is not set',
+    (name, shown) => {
+      workspace.write('events.json', events('op-00000001'))
+
+      const result = publish({ [name]: '' })
+      const warning = `the events queue is only partly configured here, missing ${shown}; the events stay in the run report`
+
+      expect(result.status).toBe(0)
+      expect(workspace.commands()).toEqual([])
+      expect(result.stdout).toContain(`::warning::publish-event: ${warning}`)
+      expect(workspace.summary()).toBe(`- Status events: ${warning}\n`)
+    }
+  )
+
+  test('names everything missing, as in a {env}-events Environment without the tenant ID', () => {
     workspace.write('events.json', events('op-00000001'))
 
-    const result = publish({ [name]: '' })
+    const result = publish({ AZURE_TENANT_ID: '', AIP_EVENT_DEADLINE: '' })
+
+    expect(result.stdout).toContain(
+      "missing AZURE_TENANT_ID, build-event's AIP_EVENT_DEADLINE;"
+    )
+  })
+
+  test('only notes it, with nothing on the summary page, where the events queue is not configured at all', () => {
+    workspace.write('events.json', events('op-00000001'))
+
+    const result = publish({
+      AIP_EVENTS_QUEUE_URL: '',
+      AIP_EVENTS_ROLE_ARN: '',
+      AIP_EVENTS_AUDIENCE: '',
+      AIP_EVENTS_CLIENT_ID: '',
+      AZURE_TENANT_ID: ''
+    })
 
     expect(result.status).toBe(0)
     expect(workspace.commands()).toEqual([])
-    expect(result.stdout).toContain('::notice::AIP_EVENTS_QUEUE_URL')
+    expect(result.stdout).toContain(
+      '::notice::The events queue is not configured here'
+    )
+    expect(result.stdout).not.toContain('::warning::')
+    expect(workspace.summary()).toBe('')
+  })
+
+  test('only notes it where the tenant ID, a repository variable the deploy also uses, is the only setting', () => {
+    workspace.write('events.json', events('op-00000001'))
+
+    const result = publish({
+      AIP_EVENTS_QUEUE_URL: '',
+      AIP_EVENTS_ROLE_ARN: '',
+      AIP_EVENTS_AUDIENCE: '',
+      AIP_EVENTS_CLIENT_ID: ''
+    })
+
+    expect(result.status).toBe(0)
+    expect(workspace.commands()).toEqual([])
+    expect(result.stdout).toContain(
+      '::notice::The events queue is not configured here'
+    )
+    expect(result.stdout).not.toContain('::warning::')
+    expect(workspace.summary()).toBe('')
   })
 
   describe('when the queue or the identity is unreachable, the run still passes', () => {

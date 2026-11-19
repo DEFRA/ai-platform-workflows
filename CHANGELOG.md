@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/DEFRA/ai-platform-workflows/compare/v2.2.0...v2.2.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* warn, naming what is missing, when the events queue is half configured ([#26](https://github.com/DEFRA/ai-platform-workflows/issues/26)) ([82340dc](https://github.com/DEFRA/ai-platform-workflows/commit/82340dcfbebac0d92e5469627d9831f20a621af7))
+
 ## [2.2.0](https://github.com/DEFRA/ai-platform-workflows/compare/v2.1.0...v2.2.0) (2026-11-13)
 
 

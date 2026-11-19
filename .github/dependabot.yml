@@ -31,3 +31,8 @@ updates:
       default-days: 7
     commit-message:
       prefix: chore
+    groups:
+      vitest:
+        patterns:
+          - 'vitest'
+          - '@vitest/*'
